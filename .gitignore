@@ -1,0 +1,31 @@
+# Local toolchains and machine-specific configuration
+.tools/
+build/CODEX95.INI
+CODEX95.INI
+
+# Unrelated research and auction images
+3com_lot_images/
+
+# Editor and OS files
+.vs/
+.vscode/
+*.user
+*.suo
+Thumbs.db
+Desktop.ini
+
+# Secrets and local environment
+.env
+.env.*
+*.key
+*.pem
+
+# Disk images and backups must never be committed
+*.adi
+*.dd
+*.img
+*.ima
+*.raw
+*.vhd
+*.vhdx
+*.vmdk
