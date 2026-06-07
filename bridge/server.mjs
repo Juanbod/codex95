@@ -121,22 +121,40 @@ Never delete files unless the user explicitly asks. Briefly summarize completed 
 async function openaiRequest(payload) {
   const key = process.env.OPENAI_API_KEY;
   if (!key) throw new Error("OPENAI_API_KEY is not set on the bridge");
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${key}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
-  const json = await response.json();
-  if (!response.ok) throw new Error(json?.error?.message || `OpenAI API returned ${response.status}`);
-  return json;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${key}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+    const text = await response.text();
+    let json;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      if (attempt < 3 && response.status >= 500) {
+        await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
+        continue;
+      }
+      throw new Error(`OpenAI API returned ${response.status}: ${text.slice(0, 240)}`);
+    }
+    if (!response.ok) {
+      if (attempt < 3 && response.status >= 500) {
+        await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
+        continue;
+      }
+      throw new Error(json?.error?.message || `OpenAI API returned ${response.status}`);
+    }
+    return json;
+  }
+  throw new Error("OpenAI API request failed after retries");
 }
 
 function nextFromResponse(session, response) {
   session.responseId = response.id;
-  conversations.set(session.key, response.id);
   const call = response.output?.find((item) => item.type === "function_call");
   if (call) {
     session.callId = call.call_id;
@@ -153,6 +171,7 @@ function nextFromResponse(session, response) {
     .filter((item) => item.type === "output_text")
     .map((item) => item.text)
     .join("\n");
+  conversations.set(session.key, response.id);
   return { status: "message", session: session.id, message: b64(clientText(text || "Done.")) };
 }
 

@@ -394,7 +394,7 @@ static void run_program(const Config *cfg, const char *command, char *out) {
     memset(&si, 0, sizeof(si));
     memset(&pi, 0, sizeof(pi));
     si.cb = sizeof(si);
-    if (!CreateProcess(NULL, mutable_cmd, NULL, NULL, FALSE, 0, NULL, cfg->root, &si, &pi)) {
+    if (!CreateProcess(full, mutable_cmd, NULL, NULL, FALSE, 0, NULL, cfg->root, &si, &pi)) {
         sprintf(out, "ERROR: could not launch program (%lu)", GetLastError());
         return;
     }
