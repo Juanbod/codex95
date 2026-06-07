@@ -893,6 +893,40 @@ static void new_project(void) {
     SetFocus(g_prompt);
 }
 
+static void project_after_delete(const char *parent, const char *deleted_name,
+                                 char *out, size_t cap) {
+    WIN32_FIND_DATA fd;
+    HANDLE find;
+    char pattern[MAX_PATH];
+    int number;
+    out[0] = 0;
+    _snprintf(pattern, sizeof(pattern) - 1, "%s\\*.*", parent);
+    pattern[sizeof(pattern) - 1] = 0;
+    find = FindFirstFile(pattern, &fd);
+    if (find != INVALID_HANDLE_VALUE) {
+        do {
+            if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
+                strcmp(fd.cFileName, ".") && strcmp(fd.cFileName, "..") &&
+                _stricmp(fd.cFileName, deleted_name)) {
+                _snprintf(out, cap - 1, "%s\\%s", parent, fd.cFileName);
+                out[cap - 1] = 0;
+                break;
+            }
+        } while (FindNextFile(find, &fd));
+        FindClose(find);
+    }
+    if (out[0]) return;
+    for (number = 1; number < 1000; number++) {
+        char name[32];
+        sprintf(name, "PROJECT%02d", number);
+        if (!_stricmp(name, deleted_name)) continue;
+        _snprintf(out, cap - 1, "%s\\%s", parent, name);
+        out[cap - 1] = 0;
+        if (GetFileAttributes(out) == 0xFFFFFFFF) break;
+    }
+    ensure_directory_tree(out);
+}
+
 static void delete_project(void) {
     int index;
     char active[MAX_PATH], parent[MAX_PATH], name[MAX_PATH], full[MAX_PATH], text[BUF_SIZE];
@@ -921,21 +955,25 @@ static void delete_project(void) {
         APP_TITLE, MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES)
         return;
     if (!delete_tree(full)) {
-        _snprintf(text, sizeof(text) - 1, "Could not completely delete the project.\r\nError: %lu",
+        _snprintf(text, sizeof(text) - 1,
+            "Could not completely delete the project.\r\nError: %lu\r\n\r\n"
+            "Close programs and files opened from this project, then try again.",
             GetLastError());
         text[sizeof(text) - 1] = 0;
         MessageBox(g_main, text, APP_TITLE, MB_OK | MB_ICONSTOP);
         return;
     }
     if (!_stricmp(active, full)) {
-        _snprintf(active, sizeof(active) - 1, "%s\\PROJECT01", parent);
-        active[sizeof(active) - 1] = 0;
-        ensure_directory_tree(active);
+        project_after_delete(parent, name, active, sizeof(active));
         SetWindowText(g_project, active);
         WritePrivateProfileString("Codex95", "Project", active, g_ini);
     }
     refresh_projects();
-    SetWindowText(g_transcript, "Project deleted.\r\nDescribe what you want to build.");
+    _snprintf(text, sizeof(text) - 1,
+        "Project deleted permanently:\r\n%s\r\n\r\nActive project:\r\n%s",
+        full, active);
+    text[sizeof(text) - 1] = 0;
+    SetWindowText(g_transcript, text);
     set_project_status(active);
 }
 
@@ -1338,7 +1376,8 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR command_line, i
     wc.style = CS_HREDRAW | CS_VREDRAW;
     wc.lpfnWndProc = wnd_proc;
     wc.hInstance = instance;
-    wc.hIcon = LoadIcon(NULL, IDI_APPLICATION);
+    wc.hIcon = LoadIcon(instance, MAKEINTRESOURCE(1));
+    if (!wc.hIcon) wc.hIcon = LoadIcon(NULL, IDI_APPLICATION);
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
     wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
     wc.lpszClassName = "Codex95Window";

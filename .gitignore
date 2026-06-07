@@ -11,6 +11,8 @@ CODEX95.INI
 .vscode/
 *.user
 *.suo
+*.o
+*.res
 Thumbs.db
 Desktop.ini
 

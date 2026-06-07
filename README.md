@@ -35,6 +35,8 @@ The current client can:
 
 - `client/codex95.c`: dependency-free Windows 95 console client.
 - `client/codex95_gui.c`: native Windows 95 GUI client.
+- `client/CODEX95.ICO` and `client/CODEX95.RC`: classic 256-color application
+  icon and Windows resource file.
 - `bridge/server.mjs`: dependency-free bridge for a modern Node.js computer.
 - `bridge/test.mjs`: protocol smoke test using mock mode.
 
@@ -223,7 +225,9 @@ The left sidebar lists sibling project folders next to the active project.
 Select a project to switch instantly, click **New** to create the next available
 `PROJECT01`, `PROJECT02`, and so on, or click **Refresh** after changing folders
 outside Codex95. **Delete project** permanently removes the selected project
-and all files inside it after two confirmations.
+and all files inside it after two confirmations. When the active project is
+deleted, Codex95 switches to another sibling project or creates one with a
+different name.
 
 The console client remains available as a fallback:
 
