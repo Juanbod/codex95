@@ -42,6 +42,7 @@
 #define IDC_SET_OK 305
 #define IDC_SET_CANCEL 306
 #define IDC_SET_DARK 307
+#define IDC_SET_MODEL 308
 
 #define WM_APPEND_TEXT (WM_USER + 1)
 #define WM_TASK_DONE (WM_USER + 2)
@@ -53,6 +54,7 @@ typedef struct {
     int port;
     char root[MAX_PATH];
     char device_name[128];
+    char model[80];
     int automatic;
     int full_access;
     int dark_mode;
@@ -666,7 +668,7 @@ static void execute_action(const Config *cfg, const char *reply, char *result, s
 
 static unsigned __stdcall task_thread(void *param) {
     Task *task = (Task *)param;
-    char prompt_enc[BIG_SIZE], root_enc[BUF_SIZE];
+    char prompt_enc[BIG_SIZE], root_enc[BUF_SIZE], model_enc[256];
     char body[BIG_SIZE], reply[BIG_SIZE], session[128], status[64];
     char message_b64[BIG_SIZE], message[BIG_SIZE], result[RESULT_SIZE];
     char result_b64[BIG_SIZE];
@@ -674,12 +676,14 @@ static unsigned __stdcall task_thread(void *param) {
     post_alloc(WM_SET_STATUS, "Working...");
     url_encode(task->prompt, prompt_enc, sizeof(prompt_enc));
     url_encode(task->cfg.root, root_enc, sizeof(root_enc));
+    url_encode(task->cfg.model, model_enc, sizeof(model_enc));
     {
         char profile[BUF_SIZE], profile_b64[BUF_SIZE * 2];
         device_profile(&task->cfg, profile, sizeof(profile));
         b64_encode((unsigned char *)profile, strlen(profile), profile_b64, sizeof(profile_b64));
-        _snprintf(body, sizeof(body) - 1, "prompt=%s&root=%s&profile=%s&access=%s",
-            prompt_enc, root_enc, profile_b64, task->cfg.full_access ? "full" : "project");
+        _snprintf(body, sizeof(body) - 1, "prompt=%s&root=%s&profile=%s&access=%s&model=%s",
+            prompt_enc, root_enc, profile_b64, task->cfg.full_access ? "full" : "project",
+            model_enc);
     }
     body[sizeof(body) - 1] = 0;
     if (!http_post(&task->cfg, "/session/start", body, reply, sizeof(reply))) {
@@ -735,6 +739,8 @@ static void load_config(Config *cfg) {
         cfg->root, sizeof(cfg->root), g_ini);
     GetPrivateProfileString("Codex95", "DeviceName", "Toshiba Libretto 70CT",
         cfg->device_name, sizeof(cfg->device_name), g_ini);
+    GetPrivateProfileString("Codex95", "Model", "gpt-5.4-mini",
+        cfg->model, sizeof(cfg->model), g_ini);
 }
 
 static void save_config(const Config *cfg) {
@@ -742,6 +748,7 @@ static void save_config(const Config *cfg) {
     WritePrivateProfileString("Codex95", "Host", cfg->host, g_ini);
     WritePrivateProfileString("Codex95", "Project", cfg->root, g_ini);
     WritePrivateProfileString("Codex95", "DeviceName", cfg->device_name, g_ini);
+    WritePrivateProfileString("Codex95", "Model", cfg->model, g_ini);
     sprintf(number, "%d", cfg->port);
     WritePrivateProfileString("Codex95", "Port", number, g_ini);
     WritePrivateProfileString("Codex95", "Automatic", cfg->automatic ? "1" : "0", g_ini);
@@ -753,6 +760,8 @@ static void controls_to_config(Config *cfg) {
     char host_port[160], *colon;
     GetPrivateProfileString("Codex95", "DeviceName", "Toshiba Libretto 70CT",
         cfg->device_name, sizeof(cfg->device_name), g_ini);
+    GetPrivateProfileString("Codex95", "Model", "gpt-5.4-mini",
+        cfg->model, sizeof(cfg->model), g_ini);
     GetWindowText(g_project, cfg->root, sizeof(cfg->root));
     GetWindowText(g_host, host_port, sizeof(host_port));
     colon = strrchr(host_port, ':');
@@ -808,13 +817,17 @@ static const char *base_name(const char *path) {
 }
 
 static void set_project_status(const char *path) {
-    char text[MAX_PATH + 32];
+    char text[MAX_PATH + 128], model[80];
+    GetPrivateProfileString("Codex95", "Model", "gpt-5.4-mini",
+        model, sizeof(model), g_ini);
     if (GetPrivateProfileInt("Codex95", "FullAccess", 0, g_ini)) {
-        _snprintf(text, sizeof(text) - 1, "%s  [FULL ACCESS]", base_name(path));
+        _snprintf(text, sizeof(text) - 1, "%s  [%s]  [FULL ACCESS]", base_name(path), model);
         text[sizeof(text) - 1] = 0;
         SetWindowText(g_status, text);
     } else {
-        SetWindowText(g_status, base_name(path));
+        _snprintf(text, sizeof(text) - 1, "%s  [%s]", base_name(path), model);
+        text[sizeof(text) - 1] = 0;
+        SetWindowText(g_status, text);
     }
 }
 
@@ -965,31 +978,41 @@ static LRESULT CALLBACK settings_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 120, 44, 230, 22,
             hwnd, (HMENU)IDC_SET_DEVICE, NULL, NULL);
         SendMessage(child, WM_SETFONT, (WPARAM)font, TRUE);
+        CreateWindow("STATIC", "Model:", WS_CHILD | WS_VISIBLE, 12, 79, 105, 18,
+            hwnd, NULL, NULL, NULL);
+        child = CreateWindowEx(WS_EX_CLIENTEDGE, "COMBOBOX", "",
+            WS_CHILD | WS_VISIBLE | WS_VSCROLL | CBS_DROPDOWN,
+            120, 76, 230, 120, hwnd, (HMENU)IDC_SET_MODEL, NULL, NULL);
+        SendMessage(child, WM_SETFONT, (WPARAM)font, TRUE);
+        SendMessage(child, CB_ADDSTRING, 0, (LPARAM)"gpt-5.4-nano");
+        SendMessage(child, CB_ADDSTRING, 0, (LPARAM)"gpt-5.4-mini");
+        SendMessage(child, CB_ADDSTRING, 0, (LPARAM)"gpt-5.4");
+        SetWindowText(child, g_settings_cfg.model);
         child = CreateWindow("BUTTON", "Run actions automatically",
-            WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 12, 82, 250, 20,
+            WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 12, 112, 250, 20,
             hwnd, (HMENU)IDC_SET_AUTO, NULL, NULL);
         SendMessage(child, WM_SETFONT, (WPARAM)font, TRUE);
         SendMessage(child, BM_SETCHECK, g_settings_cfg.automatic ? BST_CHECKED : BST_UNCHECKED, 0);
         child = CreateWindow("BUTTON", "Full computer access",
-            WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 12, 108, 250, 20,
+            WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 12, 138, 250, 20,
             hwnd, (HMENU)IDC_SET_FULL, NULL, NULL);
         SendMessage(child, WM_SETFONT, (WPARAM)font, TRUE);
         SendMessage(child, BM_SETCHECK, g_settings_cfg.full_access ? BST_CHECKED : BST_UNCHECKED, 0);
         child = CreateWindow("BUTTON", "Dark interface",
-            WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 12, 134, 250, 20,
+            WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 12, 164, 250, 20,
             hwnd, (HMENU)IDC_SET_DARK, NULL, NULL);
         SendMessage(child, WM_SETFONT, (WPARAM)font, TRUE);
         SendMessage(child, BM_SETCHECK, g_settings_cfg.dark_mode ? BST_CHECKED : BST_UNCHECKED, 0);
         child = CreateWindow("STATIC",
             "Full access allows Codex to use absolute paths, run commands anywhere,\r\n"
             "and modify or delete files outside the selected project.",
-            WS_CHILD | WS_VISIBLE, 30, 158, 320, 42, hwnd, NULL, NULL, NULL);
+            WS_CHILD | WS_VISIBLE, 30, 188, 320, 42, hwnd, NULL, NULL, NULL);
         SendMessage(child, WM_SETFONT, (WPARAM)font, TRUE);
         child = CreateWindow("BUTTON", "OK", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
-            190, 210, 76, 24, hwnd, (HMENU)IDC_SET_OK, NULL, NULL);
+            190, 240, 76, 24, hwnd, (HMENU)IDC_SET_OK, NULL, NULL);
         SendMessage(child, WM_SETFONT, (WPARAM)font, TRUE);
         child = CreateWindow("BUTTON", "Cancel", WS_CHILD | WS_VISIBLE,
-            274, 210, 76, 24, hwnd, (HMENU)IDC_SET_CANCEL, NULL, NULL);
+            274, 240, 76, 24, hwnd, (HMENU)IDC_SET_CANCEL, NULL, NULL);
         SendMessage(child, WM_SETFONT, (WPARAM)font, TRUE);
         return 0;
     }
@@ -1010,6 +1033,9 @@ static LRESULT CALLBACK settings_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             g_settings_cfg.host[sizeof(g_settings_cfg.host) - 1] = 0;
             GetWindowText(GetDlgItem(hwnd, IDC_SET_DEVICE), g_settings_cfg.device_name,
                 sizeof(g_settings_cfg.device_name));
+            GetWindowText(GetDlgItem(hwnd, IDC_SET_MODEL), g_settings_cfg.model,
+                sizeof(g_settings_cfg.model));
+            if (!g_settings_cfg.model[0]) strcpy(g_settings_cfg.model, "gpt-5.4-mini");
             g_settings_cfg.automatic =
                 SendMessage(GetDlgItem(hwnd, IDC_SET_AUTO), BM_GETCHECK, 0, 0) == BST_CHECKED;
             g_settings_cfg.full_access = full;
@@ -1060,7 +1086,7 @@ static void show_settings(void) {
     GetWindowRect(g_main, &main_rc);
     window = CreateWindowEx(WS_EX_DLGMODALFRAME, "Codex95Settings", "Codex95 Settings",
         WS_POPUP | WS_CAPTION | WS_SYSMENU,
-        main_rc.left + 80, main_rc.top + 60, 380, 278,
+        main_rc.left + 80, main_rc.top + 60, 380, 308,
         g_main, NULL, NULL, NULL);
     if (!window) return;
     EnableWindow(g_main, FALSE);

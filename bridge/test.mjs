@@ -53,8 +53,26 @@ try {
     child.stdout.once("data", () => { clearTimeout(timer); resolve(); });
   });
   assert.equal(await discover(), `CODEX95_BRIDGE ${port}`);
+  const setup = await fetch(`http://127.0.0.1:${port}/setup`);
+  assert.equal(setup.status, 200);
+  assert.equal((await setup.text()).includes("API key is not configured"), true);
+  const configured = await fetch(`http://127.0.0.1:${port}/setup`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ key: "test-key-not-real" }),
+  });
+  assert.equal(configured.status, 200);
+  assert.equal((await configured.text()).includes("API key loaded"), true);
   const profile = Buffer.from("Device: Toshiba Libretto 70CT\r\nRAM: 24 MB\r\nScreen: 800x480\r\n").toString("base64url");
-  const start = await post("/session/start", { prompt: "make hello", root: "C:\\DEV\\DEMO", profile, access: "project" });
+  const modelCheck = await post("/session/start", {
+    prompt: "model smoke",
+    root: "C:\\DEV\\MODEL",
+    profile,
+    access: "project",
+    model: "gpt-5.4-nano",
+  });
+  assert.equal(Buffer.from(modelCheck.message, "base64url").toString("utf8"), "Selected model: gpt-5.4-nano");
+  const start = await post("/session/start", { prompt: "make hello", root: "C:\\DEV\\DEMO", profile, access: "project", model: "gpt-5.4-nano" });
   assert.equal(start.status, "action");
   assert.equal(start.action, "write_file");
   assert.equal(Buffer.from(start.data, "base64url").toString("utf8").includes("Hello from Codex95"), true);

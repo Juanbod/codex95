@@ -1,9 +1,4 @@
 @echo off
-if "%OPENAI_API_KEY%"=="" (
-  echo OPENAI_API_KEY is not set.
-  echo Set it in Windows before starting the bridge.
-  pause
-  exit /b 1
-)
+start "" cmd /c "ping 127.0.0.1 -n 3 >nul & start http://127.0.0.1:8787/setup"
 node server.mjs
 pause

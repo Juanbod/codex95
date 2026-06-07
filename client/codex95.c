@@ -22,6 +22,7 @@ typedef struct {
     int port;
     char root[MAX_PATH];
     char device_name[128];
+    char model[80];
     int auto_yes;
     int full_access;
 } Config;
@@ -573,6 +574,8 @@ int main(int argc, char **argv) {
     cfg.port = argc > 2 ? atoi(argv[2]) : 8787;
     strncpy(cfg.root, argc > 3 ? argv[3] : "C:\\CODEX95\\WORK", sizeof(cfg.root) - 1);
     strcpy(cfg.device_name, "Toshiba Libretto 70CT");
+    if (!GetEnvironmentVariable("CODEX95_MODEL", cfg.model, sizeof(cfg.model)))
+        strcpy(cfg.model, "gpt-5.4-mini");
     cfg.auto_yes = (argc > 4 && !strcmp(argv[4], "-y")) || (argc > 5 && !strcmp(argv[5], "-y"));
     cfg.full_access = (argc > 4 && !strcmp(argv[4], "-full")) || (argc > 5 && !strcmp(argv[5], "-full"));
     if (WSAStartup(MAKEWORD(1, 1), &wsa)) {
@@ -592,11 +595,13 @@ int main(int argc, char **argv) {
         url_encode(prompt, prompt_enc, sizeof(prompt_enc));
         url_encode(cfg.root, root_enc, sizeof(root_enc));
         {
-            char profile[BUF_SIZE], profile_b64[BUF_SIZE * 2];
+            char profile[BUF_SIZE], profile_b64[BUF_SIZE * 2], model_enc[256];
             device_profile(&cfg, profile, sizeof(profile));
             b64_encode((unsigned char *)profile, strlen(profile), profile_b64, sizeof(profile_b64));
-            _snprintf(body, sizeof(body) - 1, "prompt=%s&root=%s&profile=%s&access=%s",
-                prompt_enc, root_enc, profile_b64, cfg.full_access ? "full" : "project");
+            url_encode(cfg.model, model_enc, sizeof(model_enc));
+            _snprintf(body, sizeof(body) - 1, "prompt=%s&root=%s&profile=%s&access=%s&model=%s",
+                prompt_enc, root_enc, profile_b64, cfg.full_access ? "full" : "project",
+                model_enc);
         }
         body[sizeof(body) - 1] = 0;
         if (!http_post(&cfg, "/session/start", body, reply, sizeof(reply))) {

@@ -73,9 +73,23 @@ $env:OPENAI_MODEL="gpt-5.4-mini"
 node bridge/server.mjs
 ```
 
+`OPENAI_MODEL` is only the fallback for older clients or clients with an empty
+model setting. Current Codex95 clients select the model for each task.
+
 The bridge listens on TCP port `8787` and advertises itself using UDP port
 `8788`. If Windows Firewall asks for permission, allow Node.js only on private
 networks.
+
+The easiest setup is to double-click `bridge\START_CODEX95.CMD`. It starts the
+bridge and opens the local setup page:
+
+```text
+http://127.0.0.1:8787/setup
+```
+
+Enter the API key there. The setup page is available only on the modern bridge
+PC. The key stays in bridge memory, is never sent to Windows 95, and is
+forgotten when the bridge stops.
 
 To save the API key for future PowerShell sessions:
 
@@ -127,6 +141,7 @@ Port=8787
 Project=C:\DEV\CODEX95
 Automatic=1
 DeviceName=Toshiba Libretto 70CT
+Model=gpt-5.4-mini
 FullAccess=0
 DarkMode=0
 ```
@@ -155,11 +170,16 @@ Open **Options > Settings** inside the GUI:
   `192.168.1.50:8787`.
 - **Device name**: friendly name included in the hardware profile sent to the
   model.
+- **Model**: editable model selector. Use `gpt-5.4-nano` for inexpensive tasks,
+  `gpt-5.4-mini` for stronger coding work, or enter another API model name.
 - **Run actions automatically**: allows file writes and commands without an
   approval prompt.
 - **Full computer access**: permits absolute paths and operations outside the
   selected project.
 - **Dark interface**: uses the built-in lightweight dark color scheme.
+
+Each project and model combination keeps separate conversation history. The
+API key always remains on the modern bridge computer.
 
 The client automatically reports the target Windows version, CPU, RAM, screen,
 codepages, free disk space, active project, and detected compilers. This helps
@@ -212,6 +232,7 @@ CODEX95.EXE 192.168.1.50 8787 C:\DEV\CLOCK -y
 ```
 
 Add `-full` only when the task genuinely requires full-computer access.
+Set the console client's model with `set CODEX95_MODEL=gpt-5.4-nano`.
 
 ## Troubleshooting
 

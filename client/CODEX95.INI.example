@@ -4,5 +4,6 @@ Port=8787
 Project=C:\DEV\CODEX95
 Automatic=1
 DeviceName=Toshiba Libretto 70CT
+Model=gpt-5.4-mini
 FullAccess=0
 DarkMode=0

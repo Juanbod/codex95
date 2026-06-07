@@ -5,7 +5,8 @@ import dgram from "node:dgram";
 const PORT = Number(process.env.CODEX95_PORT || 8787);
 const DISCOVERY_PORT = Number(process.env.CODEX95_DISCOVERY_PORT || 8788);
 const HOST = process.env.CODEX95_HOST || "0.0.0.0";
-const MODEL = process.env.OPENAI_MODEL || "gpt-5.4-mini";
+let runtimeKey = process.env.OPENAI_API_KEY || "";
+const DEFAULT_MODEL = process.env.OPENAI_MODEL || "gpt-5.4-mini";
 const MOCK = process.env.CODEX95_MOCK === "1";
 const sessions = new Map();
 const conversations = new Map();
@@ -83,6 +84,40 @@ function send(res, fields, status = 200) {
   res.end(body);
 }
 
+function sendHtml(res, body, status = 200) {
+  res.writeHead(status, {
+    "Content-Type": "text/html; charset=utf-8",
+    "Content-Length": Buffer.byteLength(body),
+    "Connection": "close",
+  });
+  res.end(body);
+}
+
+function isLocalRequest(req) {
+  const address = req.socket.remoteAddress || "";
+  return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
+}
+
+function setupPage(message = "") {
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><title>Codex95 Bridge Setup</title>
+<style>
+body{font:16px system-ui,sans-serif;max-width:560px;margin:48px auto;padding:0 20px;color:#202124}
+input,button{font:inherit;padding:9px}input{width:100%;box-sizing:border-box;margin:8px 0 16px}
+button{cursor:pointer}.status{padding:10px;background:#eef3f8;border-left:4px solid #3976a8}
+small{color:#5f6368}
+</style></head><body>
+<h1>Codex95 Bridge</h1>
+<p class="status">${message || (runtimeKey ? "API key is loaded in memory." : "API key is not configured.")}</p>
+<form method="post" action="/setup">
+<label>OpenAI API key</label>
+<input type="password" name="key" autocomplete="off" placeholder="Paste API key">
+<button type="submit">Load key into bridge memory</button>
+</form>
+<p><small>The key is not sent to Windows 95 and is not written to disk. It is forgotten when the bridge stops. Model selection is controlled by the Codex95 client.</small></p>
+</body></html>`;
+}
+
 async function readForm(req) {
   const chunks = [];
   let size = 0;
@@ -119,8 +154,8 @@ Never delete files unless the user explicitly asks. Briefly summarize completed 
 }
 
 async function openaiRequest(payload) {
-  const key = process.env.OPENAI_API_KEY;
-  if (!key) throw new Error("OPENAI_API_KEY is not set on the bridge");
+  const key = runtimeKey;
+  if (!key) throw new Error(`API key is not configured. Open http://127.0.0.1:${PORT}/setup on the bridge PC.`);
   for (let attempt = 1; attempt <= 3; attempt++) {
     const response = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
@@ -177,7 +212,7 @@ function nextFromResponse(session, response) {
 
 async function startOpenAI(session, prompt) {
   const payload = {
-    model: MODEL,
+    model: session.model,
     instructions: instructions(session.root, session.profile, session.access),
     input: prompt,
     tools,
@@ -191,7 +226,7 @@ async function startOpenAI(session, prompt) {
 
 async function continueOpenAI(session, result) {
   const response = await openaiRequest({
-    model: MODEL,
+    model: session.model,
     instructions: instructions(session.root, session.profile, session.access),
     previous_response_id: session.responseId,
     input: [{ type: "function_call_output", call_id: session.callId, output: result }],
@@ -202,6 +237,9 @@ async function continueOpenAI(session, result) {
 }
 
 function startMock(session, prompt) {
+  if (prompt.toLowerCase().includes("model smoke")) {
+    return { status: "message", session: session.id, message: b64(`Selected model: ${session.model}`) };
+  }
   if (prompt.toLowerCase().includes("full smoke")) {
     session.mockFull = true;
     session.mockStep = 1;
@@ -261,7 +299,18 @@ function continueMock(session, result) {
 const server = http.createServer(async (req, res) => {
   try {
     if (req.method === "GET" && req.url === "/health") {
-      return send(res, { status: "ok", mode: MOCK ? "mock" : "openai", model: MODEL });
+      return send(res, { status: "ok", mode: MOCK ? "mock" : "openai", model: DEFAULT_MODEL, key: runtimeKey ? "loaded" : "missing" });
+    }
+    if (req.method === "GET" && req.url === "/setup") {
+      if (!isLocalRequest(req)) return sendHtml(res, "<h1>Local access only</h1>", 403);
+      return sendHtml(res, setupPage());
+    }
+    if (req.method === "POST" && req.url === "/setup") {
+      if (!isLocalRequest(req)) return sendHtml(res, "<h1>Local access only</h1>", 403);
+      const form = await readForm(req);
+      if (!form.key) return sendHtml(res, setupPage("No key was entered."), 400);
+      runtimeKey = form.key;
+      return sendHtml(res, setupPage("API key loaded. Codex95 can now send real tasks."));
     }
     if (req.method === "POST" && req.url === "/session/start") {
       const form = await readForm(req);
@@ -269,7 +318,8 @@ const server = http.createServer(async (req, res) => {
       const id = crypto.randomBytes(8).toString("hex");
       const profile = Buffer.from(form.profile || "", "base64url").toString("utf8");
       const access = form.access === "full" ? "full" : "project";
-      const session = { id, root: form.root, profile, access, key: form.root.toLowerCase(), touchedAt: Date.now() };
+      const model = /^[A-Za-z0-9._-]{1,80}$/.test(form.model || "") ? form.model : DEFAULT_MODEL;
+      const session = { id, root: form.root, profile, access, model, key: `${form.root.toLowerCase()}|${model}`, touchedAt: Date.now() };
       sessions.set(id, session);
       return send(res, MOCK ? startMock(session, form.prompt) : await startOpenAI(session, form.prompt));
     }
@@ -297,7 +347,8 @@ setInterval(() => {
 }, 5 * 60 * 1000).unref();
 
 server.listen(PORT, HOST, () => {
-  console.log(`Codex95 bridge listening on http://${HOST}:${PORT} (${MOCK ? "mock" : MODEL})`);
+  console.log(`Codex95 bridge listening on http://${HOST}:${PORT} (${MOCK ? "mock" : DEFAULT_MODEL})`);
+  console.log(`Local setup page: http://127.0.0.1:${PORT}/setup`);
 });
 
 const discovery = dgram.createSocket("udp4");
