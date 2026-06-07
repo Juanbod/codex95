@@ -2,6 +2,7 @@
 .tools/
 build/CODEX95.INI
 CODEX95.INI
+bridge/.codex95-state.json
 
 # Unrelated research and auction images
 3com_lot_images/

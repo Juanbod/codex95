@@ -22,13 +22,14 @@ The current client can:
 - accept natural-language tasks in a native Windows 95 GUI;
 - list and read project files;
 - create directories and write files automatically inside the selected project;
-- switch, create, and permanently delete projects from the GUI;
+- switch, create, rename, and permanently delete projects from the GUI;
 - optionally access absolute paths across the target computer;
 - discover installed compilers and build tools;
 - run Windows 95 build commands with a two-minute timeout;
 - launch completed GUI programs without blocking Codex95;
 - use a persistent dark interface;
-- remember follow-up requests for each project while the bridge is running;
+- save visible chats for every project and model beside the client;
+- remember follow-up context for every project and model across bridge restarts;
 - keep the OpenAI API key off the retro computer.
 
 ## Layout
@@ -180,8 +181,11 @@ Open **Options > Settings** inside the GUI:
   selected project.
 - **Dark interface**: uses the built-in lightweight dark color scheme.
 
-Each project and model combination keeps separate conversation history. The
-API key always remains on the modern bridge computer.
+Each project and model combination keeps separate conversation history. Visible
+chat logs are stored in the `CHATS` folder beside `CODEX95W.EXE`. Bridge-side
+OpenAI response IDs are stored in the ignored local file
+`bridge/.codex95-state.json`. The API key always remains on the modern bridge
+computer and is never written to either history file.
 
 The client automatically reports the target Windows version, CPU, RAM, screen,
 codepages, free disk space, active project, and detected compilers. This helps
@@ -222,12 +226,12 @@ preferred final Windows 95 release build.
 ## Using Projects
 
 The left sidebar lists sibling project folders next to the active project.
-Select a project to switch instantly, click **New** to create the next available
-`PROJECT01`, `PROJECT02`, and so on, or click **Refresh** after changing folders
-outside Codex95. **Delete project** permanently removes the selected project
-and all files inside it after two confirmations. When the active project is
-deleted, Codex95 switches to another sibling project or creates one with a
-different name.
+Select a project to switch instantly. Click **New** and enter its name, use
+**Rename project** to rename the selected folder, or click **Refresh** after
+changing folders outside Codex95. **Delete project** permanently removes the
+selected project and all files inside it after two confirmations. When the
+active project is deleted, Codex95 switches to another sibling project or
+creates one with a different name.
 
 The console client remains available as a fallback:
 
@@ -237,6 +241,14 @@ CODEX95.EXE 192.168.1.50 8787 C:\DEV\CLOCK -y
 
 Add `-full` only when the task genuinely requires full-computer access.
 Set the console client's model with `set CODEX95_MODEL=gpt-5.4-nano`.
+
+## Planned Updates
+
+One-click updates and an **Update now** / **Later** notification are planned
+for both the Windows 95 client and the modern bridge. The updater will only be
+enabled after signed manifests, package verification, rollback, and preservation
+of projects, settings, and chats are implemented. See [UPDATES.md](UPDATES.md)
+for the current design.
 
 ## Troubleshooting
 

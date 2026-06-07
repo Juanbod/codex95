@@ -1,6 +1,7 @@
 import http from "node:http";
 import crypto from "node:crypto";
 import dgram from "node:dgram";
+import fs from "node:fs";
 
 const PORT = Number(process.env.CODEX95_PORT || 8787);
 const DISCOVERY_PORT = Number(process.env.CODEX95_DISCOVERY_PORT || 8788);
@@ -9,9 +10,27 @@ let runtimeKey = process.env.OPENAI_API_KEY || "";
 const DEFAULT_MODEL = process.env.OPENAI_MODEL || "gpt-5.4-mini";
 const MOCK = process.env.CODEX95_MOCK === "1";
 const sessions = new Map();
-const conversations = new Map();
+const STATE_PATH = new URL(".codex95-state.json", import.meta.url);
 const SESSION_TTL_MS = 30 * 60 * 1000;
 const MAX_REQUEST_BYTES = 128 * 1024;
+
+function loadConversations() {
+  try {
+    return new Map(Object.entries(JSON.parse(fs.readFileSync(STATE_PATH, "utf8"))));
+  } catch {
+    return new Map();
+  }
+}
+
+function saveConversations() {
+  try {
+    fs.writeFileSync(STATE_PATH, JSON.stringify(Object.fromEntries(conversations), null, 2));
+  } catch (error) {
+    console.warn(`Could not save conversation state: ${error.message}`);
+  }
+}
+
+const conversations = loadConversations();
 
 const tools = [
   tool("list_dir", "List files and directories relative to the project root.", {
@@ -207,6 +226,7 @@ function nextFromResponse(session, response) {
     .map((item) => item.text)
     .join("\n");
   conversations.set(session.key, response.id);
+  saveConversations();
   return { status: "message", session: session.id, message: b64(clientText(text || "Done.")) };
 }
 

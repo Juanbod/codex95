@@ -34,6 +34,7 @@
 #define IDC_NEW_PROJECT 110
 #define IDC_REFRESH_PROJECTS 111
 #define IDC_DELETE_PROJECT 112
+#define IDC_RENAME_PROJECT 113
 #define IDM_SETTINGS 201
 #define IDC_SET_HOST 301
 #define IDC_SET_DEVICE 302
@@ -43,6 +44,9 @@
 #define IDC_SET_CANCEL 306
 #define IDC_SET_DARK 307
 #define IDC_SET_MODEL 308
+#define IDC_NAME_EDIT 401
+#define IDC_NAME_OK 402
+#define IDC_NAME_CANCEL 403
 
 #define WM_APPEND_TEXT (WM_USER + 1)
 #define WM_TASK_DONE (WM_USER + 2)
@@ -82,6 +86,11 @@ static HBRUSH g_dark_edit_brush;
 static char g_ini[MAX_PATH];
 static volatile int g_busy = 0;
 static int g_smoke = 0;
+static char g_name_value[MAX_PATH];
+static int g_name_done;
+
+static void controls_to_config(Config *cfg);
+static void ensure_directory_tree(const char *path);
 
 static const char b64_table[] =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
@@ -728,6 +737,81 @@ static void ini_path(void) {
     else strcpy(g_ini, "CODEX95.INI");
 }
 
+static unsigned long text_hash(const char *text) {
+    unsigned long hash = 2166136261UL;
+    while (*text) {
+        hash ^= (unsigned char)tolower((unsigned char)*text++);
+        hash *= 16777619UL;
+    }
+    return hash;
+}
+
+static void chat_directory_for(const char *root, char *out, size_t cap) {
+    char base[MAX_PATH], *slash;
+    GetModuleFileName(NULL, base, sizeof(base));
+    slash = strrchr(base, '\\');
+    if (slash) *slash = 0;
+    _snprintf(out, cap - 1, "%s\\CHATS\\%08lX", base, text_hash(root));
+    out[cap - 1] = 0;
+}
+
+static void chat_path_for(const char *root, const char *model, char *out, size_t cap) {
+    char directory[MAX_PATH];
+    chat_directory_for(root, directory, sizeof(directory));
+    ensure_directory_tree(directory);
+    _snprintf(out, cap - 1, "%s\\%08lX.TXT", directory, text_hash(model));
+    out[cap - 1] = 0;
+}
+
+static void save_chat(void) {
+    Config cfg;
+    char path[MAX_PATH];
+    char *text;
+    HANDLE file;
+    DWORD written;
+    int len;
+    if (!g_transcript || !g_project) return;
+    controls_to_config(&cfg);
+    chat_path_for(cfg.root, cfg.model, path, sizeof(path));
+    len = GetWindowTextLength(g_transcript);
+    text = (char *)malloc(len + 1);
+    if (!text) return;
+    GetWindowText(g_transcript, text, len + 1);
+    file = CreateFile(path, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file != INVALID_HANDLE_VALUE) {
+        WriteFile(file, text, (DWORD)len, &written, NULL);
+        CloseHandle(file);
+    }
+    free(text);
+}
+
+static void load_chat(const char *root) {
+    Config cfg;
+    char path[MAX_PATH], *text;
+    HANDLE file;
+    DWORD size, read;
+    controls_to_config(&cfg);
+    chat_path_for(root, cfg.model, path, sizeof(path));
+    file = CreateFile(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) {
+        SetWindowText(g_transcript, "Codex95 is ready.\r\nDescribe what you want to build.");
+        return;
+    }
+    size = GetFileSize(file, NULL);
+    if (size == 0xFFFFFFFFUL) { CloseHandle(file); return; }
+    if (size > TRANSCRIPT_LIMIT) size = TRANSCRIPT_LIMIT;
+    SetFilePointer(file, -(LONG)size, NULL, FILE_END);
+    text = (char *)malloc(size + 1);
+    if (!text) { CloseHandle(file); return; }
+    if (!ReadFile(file, text, size, &read, NULL)) read = 0;
+    text[read] = 0;
+    CloseHandle(file);
+    SetWindowText(g_transcript, text);
+    free(text);
+}
+
 static void load_config(Config *cfg) {
     cfg->port = GetPrivateProfileInt("Codex95", "Port", 8787, g_ini);
     cfg->automatic = GetPrivateProfileInt("Codex95", "Automatic", 1, g_ini);
@@ -754,6 +838,7 @@ static void save_config(const Config *cfg) {
     WritePrivateProfileString("Codex95", "Automatic", cfg->automatic ? "1" : "0", g_ini);
     WritePrivateProfileString("Codex95", "FullAccess", cfg->full_access ? "1" : "0", g_ini);
     WritePrivateProfileString("Codex95", "DarkMode", cfg->dark_mode ? "1" : "0", g_ini);
+    WritePrivateProfileString(NULL, NULL, NULL, g_ini);
 }
 
 static void controls_to_config(Config *cfg) {
@@ -866,14 +951,89 @@ static void switch_project(void) {
     parent_directory(active, parent, sizeof(parent));
     _snprintf(full, sizeof(full) - 1, "%s\\%s", parent, name);
     full[sizeof(full) - 1] = 0;
+    save_chat();
     SetWindowText(g_project, full);
     WritePrivateProfileString("Codex95", "Project", full, g_ini);
-    SetWindowText(g_transcript, "Codex95 is ready.\r\nDescribe what you want to build.");
+    WritePrivateProfileString(NULL, NULL, NULL, g_ini);
+    load_chat(full);
     set_project_status(full);
+}
+
+static int valid_project_name(const char *name) {
+    const char *invalid = "\\/:*?\"<>|";
+    return name[0] && strcmp(name, ".") && strcmp(name, "..") &&
+        strpbrk(name, invalid) == NULL;
+}
+
+static LRESULT CALLBACK name_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+    case WM_CREATE: {
+        HFONT font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+        HWND edit = CreateWindowEx(WS_EX_CLIENTEDGE, "EDIT", g_name_value,
+            WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 12, 14, 300, 22,
+            hwnd, (HMENU)IDC_NAME_EDIT, NULL, NULL);
+        HWND ok = CreateWindow("BUTTON", "OK", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
+            152, 48, 76, 24, hwnd, (HMENU)IDC_NAME_OK, NULL, NULL);
+        HWND cancel = CreateWindow("BUTTON", "Cancel", WS_CHILD | WS_VISIBLE,
+            236, 48, 76, 24, hwnd, (HMENU)IDC_NAME_CANCEL, NULL, NULL);
+        SendMessage(edit, WM_SETFONT, (WPARAM)font, TRUE);
+        SendMessage(ok, WM_SETFONT, (WPARAM)font, TRUE);
+        SendMessage(cancel, WM_SETFONT, (WPARAM)font, TRUE);
+        SendMessage(edit, EM_LIMITTEXT, 120, 0);
+        SetFocus(edit);
+        SendMessage(edit, EM_SETSEL, 0, -1);
+        return 0;
+    }
+    case WM_COMMAND:
+        if (LOWORD(wp) == IDC_NAME_OK) {
+            GetWindowText(GetDlgItem(hwnd, IDC_NAME_EDIT), g_name_value, sizeof(g_name_value));
+            if (!valid_project_name(g_name_value)) {
+                MessageBox(hwnd, "Enter a valid folder name without \\ / : * ? \" < > |",
+                    APP_TITLE, MB_OK | MB_ICONEXCLAMATION);
+                return 0;
+            }
+            g_name_done = 1;
+            DestroyWindow(hwnd);
+        } else if (LOWORD(wp) == IDC_NAME_CANCEL) DestroyWindow(hwnd);
+        return 0;
+    case WM_CLOSE:
+        DestroyWindow(hwnd);
+        return 0;
+    }
+    return DefWindowProc(hwnd, msg, wp, lp);
+}
+
+static int ask_project_name(const char *title, const char *initial, char *out, size_t cap) {
+    HWND window;
+    MSG msg;
+    RECT rc;
+    strncpy(g_name_value, initial, sizeof(g_name_value) - 1);
+    g_name_value[sizeof(g_name_value) - 1] = 0;
+    g_name_done = 0;
+    GetWindowRect(g_main, &rc);
+    window = CreateWindowEx(WS_EX_DLGMODALFRAME, "Codex95Name", title,
+        WS_POPUP | WS_CAPTION | WS_SYSMENU, rc.left + 120, rc.top + 100, 340, 112,
+        g_main, NULL, NULL, NULL);
+    if (!window) return 0;
+    EnableWindow(g_main, FALSE);
+    ShowWindow(window, SW_SHOW);
+    while (IsWindow(window) && GetMessage(&msg, NULL, 0, 0)) {
+        if (!IsDialogMessage(window, &msg)) {
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
+        }
+    }
+    EnableWindow(g_main, TRUE);
+    SetActiveWindow(g_main);
+    if (!g_name_done) return 0;
+    strncpy(out, g_name_value, cap - 1);
+    out[cap - 1] = 0;
+    return 1;
 }
 
 static void new_project(void) {
     char active[MAX_PATH], parent[MAX_PATH], full[MAX_PATH];
+    char name[128];
     int number;
     if (g_busy) return;
     GetWindowText(g_project, active, sizeof(active));
@@ -884,13 +1044,65 @@ static void new_project(void) {
         full[sizeof(full) - 1] = 0;
         if (GetFileAttributes(full) == 0xFFFFFFFF) break;
     }
+    strncpy(name, base_name(full), sizeof(name) - 1);
+    name[sizeof(name) - 1] = 0;
+    if (!ask_project_name("New project name", name, name, sizeof(name))) return;
+    _snprintf(full, sizeof(full) - 1, "%s\\%s", parent, name);
+    full[sizeof(full) - 1] = 0;
+    if (GetFileAttributes(full) != 0xFFFFFFFF) {
+        MessageBox(g_main, "A project with that name already exists.", APP_TITLE,
+            MB_OK | MB_ICONEXCLAMATION);
+        return;
+    }
+    save_chat();
     ensure_directory_tree(full);
     SetWindowText(g_project, full);
     WritePrivateProfileString("Codex95", "Project", full, g_ini);
+    WritePrivateProfileString(NULL, NULL, NULL, g_ini);
     refresh_projects();
-    SetWindowText(g_transcript, "New project created.\r\nDescribe what you want to build.");
+    load_chat(full);
     set_project_status(full);
     SetFocus(g_prompt);
+}
+
+static void rename_project(void) {
+    int index;
+    int active_renamed;
+    char active[MAX_PATH], parent[MAX_PATH], old_name[MAX_PATH], new_name[128];
+    char old_path[MAX_PATH], new_path[MAX_PATH], old_chat[MAX_PATH], new_chat[MAX_PATH];
+    if (g_busy) return;
+    index = (int)SendMessage(g_projects, LB_GETCURSEL, 0, 0);
+    if (index == LB_ERR) { MessageBox(g_main, "Select a project to rename.", APP_TITLE, MB_OK); return; }
+    SendMessage(g_projects, LB_GETTEXT, index, (LPARAM)old_name);
+    if (!ask_project_name("Rename project", old_name, new_name, sizeof(new_name))) return;
+    GetWindowText(g_project, active, sizeof(active));
+    parent_directory(active, parent, sizeof(parent));
+    _snprintf(old_path, sizeof(old_path) - 1, "%s\\%s", parent, old_name);
+    _snprintf(new_path, sizeof(new_path) - 1, "%s\\%s", parent, new_name);
+    old_path[sizeof(old_path) - 1] = new_path[sizeof(new_path) - 1] = 0;
+    active_renamed = !_stricmp(active, old_path);
+    if (GetFileAttributes(new_path) != 0xFFFFFFFF) {
+        MessageBox(g_main, "A project with that name already exists.", APP_TITLE, MB_OK | MB_ICONEXCLAMATION);
+        return;
+    }
+    save_chat();
+    if (!MoveFile(old_path, new_path)) {
+        MessageBox(g_main, "Could not rename project. Close programs opened from it and try again.",
+            APP_TITLE, MB_OK | MB_ICONSTOP);
+        return;
+    }
+    chat_directory_for(old_path, old_chat, sizeof(old_chat));
+    chat_directory_for(new_path, new_chat, sizeof(new_chat));
+    MoveFile(old_chat, new_chat);
+    if (active_renamed) {
+        SetWindowText(g_project, new_path);
+        WritePrivateProfileString("Codex95", "Project", new_path, g_ini);
+        WritePrivateProfileString(NULL, NULL, NULL, g_ini);
+        strcpy(active, new_path);
+    }
+    refresh_projects();
+    if (active_renamed) load_chat(new_path);
+    set_project_status(active);
 }
 
 static void project_after_delete(const char *parent, const char *deleted_name,
@@ -929,7 +1141,9 @@ static void project_after_delete(const char *parent, const char *deleted_name,
 
 static void delete_project(void) {
     int index;
+    int active_deleted;
     char active[MAX_PATH], parent[MAX_PATH], name[MAX_PATH], full[MAX_PATH], text[BUF_SIZE];
+    char chat_path[MAX_PATH];
     if (g_busy) return;
     index = (int)SendMessage(g_projects, LB_GETCURSEL, 0, 0);
     if (index == LB_ERR) {
@@ -963,17 +1177,17 @@ static void delete_project(void) {
         MessageBox(g_main, text, APP_TITLE, MB_OK | MB_ICONSTOP);
         return;
     }
-    if (!_stricmp(active, full)) {
+    chat_directory_for(full, chat_path, sizeof(chat_path));
+    delete_tree(chat_path);
+    active_deleted = !_stricmp(active, full);
+    if (active_deleted) {
         project_after_delete(parent, name, active, sizeof(active));
         SetWindowText(g_project, active);
         WritePrivateProfileString("Codex95", "Project", active, g_ini);
+        WritePrivateProfileString(NULL, NULL, NULL, g_ini);
     }
     refresh_projects();
-    _snprintf(text, sizeof(text) - 1,
-        "Project deleted permanently:\r\n%s\r\n\r\nActive project:\r\n%s",
-        full, active);
-    text[sizeof(text) - 1] = 0;
-    SetWindowText(g_transcript, text);
+    if (active_deleted) load_chat(active);
     set_project_status(active);
 }
 
@@ -988,8 +1202,13 @@ static void browse_project(void) {
     bi.ulFlags = BIF_RETURNONLYFSDIRS;
     id = SHBrowseForFolder(&bi);
     if (id && SHGetPathFromIDList(id, path)) {
+        save_chat();
         SetWindowText(g_project, path);
+        WritePrivateProfileString("Codex95", "Project", path, g_ini);
+        WritePrivateProfileString(NULL, NULL, NULL, g_ini);
         refresh_projects();
+        load_chat(path);
+        set_project_status(path);
     }
     if (id && SUCCEEDED(SHGetMalloc(&allocator))) {
         allocator->lpVtbl->Free(allocator, id);
@@ -1118,6 +1337,7 @@ static void show_settings(void) {
     MSG msg;
     RECT main_rc;
     if (g_busy) return;
+    save_chat();
     load_config(&g_settings_cfg);
     controls_to_config(&g_settings_cfg);
     g_settings_done = 0;
@@ -1137,8 +1357,10 @@ static void show_settings(void) {
     }
     EnableWindow(g_main, TRUE);
     SetActiveWindow(g_main);
-    if (g_settings_done)
+    if (g_settings_done) {
+        load_chat(g_settings_cfg.root);
         set_project_status(g_settings_cfg.root);
+    }
 }
 
 static void start_task(void) {
@@ -1185,6 +1407,7 @@ static void start_task(void) {
     EnableWindow(g_projects, FALSE);
     EnableWindow(GetDlgItem(g_main, IDC_NEW_PROJECT), FALSE);
     EnableWindow(GetDlgItem(g_main, IDC_DELETE_PROJECT), FALSE);
+    EnableWindow(GetDlgItem(g_main, IDC_RENAME_PROJECT), FALSE);
     thread = (HANDLE)_beginthreadex(NULL, 768 * 1024, task_thread, task, 0, &id);
     if (thread) CloseHandle(thread);
     else {
@@ -1193,6 +1416,7 @@ static void start_task(void) {
         EnableWindow(g_projects, TRUE);
         EnableWindow(GetDlgItem(g_main, IDC_NEW_PROJECT), TRUE);
         EnableWindow(GetDlgItem(g_main, IDC_DELETE_PROJECT), TRUE);
+        EnableWindow(GetDlgItem(g_main, IDC_RENAME_PROJECT), TRUE);
         free(task);
     }
 }
@@ -1205,9 +1429,10 @@ static void resize_controls(HWND hwnd) {
     h = rc.bottom;
     MoveWindow(g_project, 60, 8, w - 144, 22, TRUE);
     MoveWindow(GetDlgItem(hwnd, IDC_BROWSE), w - 76, 8, 68, 22, TRUE);
-    MoveWindow(g_projects, 8, top + 18, side - 16, h - top - bottom - 76, TRUE);
-    MoveWindow(GetDlgItem(hwnd, IDC_NEW_PROJECT), 8, h - bottom - 52, 54, 22, TRUE);
-    MoveWindow(GetDlgItem(hwnd, IDC_REFRESH_PROJECTS), 66, h - bottom - 52, 54, 22, TRUE);
+    MoveWindow(g_projects, 8, top + 18, side - 16, h - top - bottom - 102, TRUE);
+    MoveWindow(GetDlgItem(hwnd, IDC_NEW_PROJECT), 8, h - bottom - 78, 54, 22, TRUE);
+    MoveWindow(GetDlgItem(hwnd, IDC_REFRESH_PROJECTS), 66, h - bottom - 78, 54, 22, TRUE);
+    MoveWindow(GetDlgItem(hwnd, IDC_RENAME_PROJECT), 8, h - bottom - 52, 112, 22, TRUE);
     MoveWindow(GetDlgItem(hwnd, IDC_DELETE_PROJECT), 8, h - bottom - 26, 112, 22, TRUE);
     MoveWindow(g_transcript, content, top, w - content - 8, h - top - bottom, TRUE);
     MoveWindow(g_prompt, content, h - bottom + 8, w - content - 96, 54, TRUE);
@@ -1240,6 +1465,8 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             66, 314, 54, 22, hwnd, (HMENU)IDC_REFRESH_PROJECTS, NULL, NULL);
         CreateWindow("BUTTON", "Delete project", WS_CHILD | WS_VISIBLE,
             8, 340, 112, 22, hwnd, (HMENU)IDC_DELETE_PROJECT, NULL, NULL);
+        CreateWindow("BUTTON", "Rename project", WS_CHILD | WS_VISIBLE,
+            8, 366, 112, 22, hwnd, (HMENU)IDC_RENAME_PROJECT, NULL, NULL);
         g_transcript = CreateWindowEx(WS_EX_CLIENTEDGE, "EDIT",
             "Codex95 is ready.\r\nDescribe what you want to build.",
             WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL |
@@ -1272,6 +1499,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         SendMessage(g_auto, BM_SETCHECK, cfg.automatic ? BST_CHECKED : BST_UNCHECKED, 0);
         ensure_directory_tree(cfg.root);
         refresh_projects();
+        load_chat(cfg.root);
         set_project_status(cfg.root);
         return 0;
     }
@@ -1283,6 +1511,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         else if (LOWORD(wp) == IDC_BROWSE) browse_project();
         else if (LOWORD(wp) == IDC_NEW_PROJECT) new_project();
         else if (LOWORD(wp) == IDC_DELETE_PROJECT) delete_project();
+        else if (LOWORD(wp) == IDC_RENAME_PROJECT) rename_project();
         else if (LOWORD(wp) == IDC_REFRESH_PROJECTS) refresh_projects();
         else if (LOWORD(wp) == IDC_PROJECTS && HIWORD(wp) == LBN_SELCHANGE) switch_project();
         else if (LOWORD(wp) == IDM_SETTINGS) show_settings();
@@ -1320,6 +1549,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         SendMessage(g_transcript, EM_SETSEL, end, end);
         SendMessage(g_transcript, EM_REPLACESEL, FALSE, (LPARAM)text);
         SendMessage(g_transcript, EM_SCROLLCARET, 0, 0);
+        save_chat();
         free(text);
         return 0;
     }
@@ -1333,6 +1563,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         EnableWindow(g_projects, TRUE);
         EnableWindow(GetDlgItem(hwnd, IDC_NEW_PROJECT), TRUE);
         EnableWindow(GetDlgItem(hwnd, IDC_DELETE_PROJECT), TRUE);
+        EnableWindow(GetDlgItem(hwnd, IDC_RENAME_PROJECT), TRUE);
         {
             char root[MAX_PATH];
             GetWindowText(g_project, root, sizeof(root));
@@ -1348,6 +1579,12 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_CLOSE:
         if (g_busy && MessageBox(hwnd, "Codex95 is still working. Close anyway?",
             APP_TITLE, MB_YESNO | MB_ICONQUESTION) != IDYES) return 0;
+        save_chat();
+        {
+            Config cfg;
+            controls_to_config(&cfg);
+            save_config(&cfg);
+        }
         DestroyWindow(hwnd);
         return 0;
     case WM_DESTROY:
@@ -1385,6 +1622,9 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR command_line, i
     wc.lpfnWndProc = settings_proc;
     wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
     wc.lpszClassName = "Codex95Settings";
+    if (!RegisterClass(&wc)) return 1;
+    wc.lpfnWndProc = name_proc;
+    wc.lpszClassName = "Codex95Name";
     if (!RegisterClass(&wc)) return 1;
     menu = CreateMenu();
     options = CreatePopupMenu();
