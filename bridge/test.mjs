@@ -10,7 +10,7 @@ const child = spawn(process.execPath, ["server.mjs"], {
     CODEX95_MOCK: "1",
     CODEX95_PORT: String(port),
     CODEX95_DISCOVERY_PORT: String(port + 1),
-    CODEX95_HOST: "localhost",
+    CODEX95_HOST: "127.0.0.1",
   },
   stdio: ["ignore", "pipe", "inherit"],
 });
@@ -23,7 +23,7 @@ function parse(text) {
 }
 
 async function post(path, form) {
-  const response = await fetch(`http://localhost:${port}${path}`, {
+  const response = await fetch(`http://127.0.0.1:${port}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams(form),
@@ -43,7 +43,7 @@ async function discover() {
       socket.close();
       resolve(message.toString("ascii"));
     });
-    socket.send(Buffer.from("CODEX95_DISCOVER"), port + 1, "localhost");
+    socket.send(Buffer.from("CODEX95_DISCOVER"), port + 1, "127.0.0.1");
   });
 }
 

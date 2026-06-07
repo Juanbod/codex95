@@ -556,7 +556,7 @@ static void execute_action(const Config *cfg, const char *reply, char *result, s
 static void usage(void) {
     puts("Codex95 client");
     puts("Usage: CODEX95.EXE <bridge-host> [port] [project-root] [-y] [-full]");
-    puts("Example: CODEX95.EXE bridge-pc.local 8787 C:\\DEV\\CLOCK");
+    puts("Example: CODEX95.EXE 192.168.1.50 8787 C:\\DEV\\CLOCK");
 }
 
 int main(int argc, char **argv) {

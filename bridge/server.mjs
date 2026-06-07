@@ -4,7 +4,7 @@ import dgram from "node:dgram";
 
 const PORT = Number(process.env.CODEX95_PORT || 8787);
 const DISCOVERY_PORT = Number(process.env.CODEX95_DISCOVERY_PORT || 8788);
-const HOST = process.env.CODEX95_HOST || "";
+const HOST = process.env.CODEX95_HOST || "0.0.0.0";
 const MODEL = process.env.OPENAI_MODEL || "gpt-5.4-mini";
 const MOCK = process.env.CODEX95_MOCK === "1";
 const sessions = new Map();
@@ -277,8 +277,8 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000).unref();
 
-server.listen(PORT, HOST || undefined, () => {
-  console.log(`Codex95 bridge listening on port ${PORT} (${MOCK ? "mock" : MODEL})`);
+server.listen(PORT, HOST, () => {
+  console.log(`Codex95 bridge listening on http://${HOST}:${PORT} (${MOCK ? "mock" : MODEL})`);
 });
 
 const discovery = dgram.createSocket("udp4");
@@ -291,7 +291,7 @@ discovery.on("message", (message, remote) => {
     discovery.send(Buffer.from(`CODEX95_BRIDGE ${PORT}`, "ascii"), remote.port, remote.address);
   }
 });
-discovery.bind(DISCOVERY_PORT, HOST || undefined, () => {
+discovery.bind(DISCOVERY_PORT, HOST, () => {
   discovery.setBroadcast(true);
   console.log(`Codex95 LAN discovery listening on UDP ${DISCOVERY_PORT}`);
 });

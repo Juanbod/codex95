@@ -38,17 +38,55 @@ The current client can:
 - `bridge/server.mjs`: dependency-free bridge for a modern Node.js computer.
 - `bridge/test.mjs`: protocol smoke test using mock mode.
 
-## Run The Bridge
+## How It Works
+
+Codex95 has two parts:
+
+1. `CODEX95W.EXE` runs on the Windows 95 computer and performs file operations,
+   builds, tests, and program launches.
+2. `bridge/server.mjs` runs on a modern computer and securely calls the OpenAI
+   API over modern HTTPS.
+
+The Windows 95 client talks to the bridge over plain HTTP on the trusted local
+network. The OpenAI API key never needs to be stored on the retro computer.
+
+Example network:
+
+```text
+Toshiba Libretto             Modern bridge PC             OpenAI API
+192.168.1.70  -- LAN -->     192.168.1.50:8787  -- TLS --> Internet
+```
+
+The addresses above are examples. Use the actual local addresses assigned by
+your router.
+
+## Quick Start
+
+### 1. Prepare The Modern Bridge PC
 
 Install a current Node.js release on the modern computer, then:
 
 ```powershell
+cd C:\path\to\codex95
 $env:OPENAI_API_KEY="..."
 $env:OPENAI_MODEL="gpt-5.4-mini"
 node bridge/server.mjs
 ```
 
-You can also double-click `bridge\START_CODEX95.CMD` after setting the API key.
+The bridge listens on TCP port `8787` and advertises itself using UDP port
+`8788`. If Windows Firewall asks for permission, allow Node.js only on private
+networks.
+
+To save the API key for future PowerShell sessions:
+
+```powershell
+setx OPENAI_API_KEY "your-api-key"
+```
+
+Open a new terminal after using `setx`. You can then double-click
+`bridge\START_CODEX95.CMD`.
+
+### 2. Test The Bridge Without An API Key
 
 For an offline protocol test without an API key:
 
@@ -57,10 +95,72 @@ $env:CODEX95_MOCK="1"
 node bridge/server.mjs
 ```
 
-Allow inbound TCP port `8787` only from the trusted local network. Do not expose
-the bridge or the Windows 95 computer directly to the internet.
+Or double-click `bridge\START_MOCK.CMD`. Mock mode accepts requests but does not
+contact OpenAI. It is the safest way to confirm networking and client setup.
 
-## Build The Windows 95 Client
+### 3. Copy The Client To Windows 95
+
+Copy these files to a folder on the Windows 95 computer using a CF card, SD
+adapter, network share, or other removable media:
+
+```text
+build\CODEX95W.EXE
+client\CODEX95.INI.example
+```
+
+Rename `CODEX95.INI.example` to `CODEX95.INI` and place it beside
+`CODEX95W.EXE`. The default configuration uses automatic bridge discovery:
+
+```ini
+[Codex95]
+Host=auto
+Port=8787
+Project=C:\DEV\CODEX95
+Automatic=1
+DeviceName=Toshiba Libretto 70CT
+FullAccess=0
+DarkMode=0
+```
+
+If discovery does not work, replace `Host=auto` with the bridge PC's local IP:
+
+```ini
+Host=192.168.1.50
+```
+
+### 4. Start Codex95
+
+1. Start the bridge on the modern computer.
+2. Open `CODEX95W.EXE` on Windows 95.
+3. Choose or create a project.
+4. Enter a task and click **Build it**.
+
+The status area shows `[FULL ACCESS]` when unrestricted access is enabled.
+Start with project-only access and keep backups of the Windows 95 disk.
+
+## Settings
+
+Open **Options > Settings** inside the GUI:
+
+- **Bridge address**: `auto`, a hostname, or an address such as
+  `192.168.1.50:8787`.
+- **Device name**: friendly name included in the hardware profile sent to the
+  model.
+- **Run actions automatically**: allows file writes and commands without an
+  approval prompt.
+- **Full computer access**: permits absolute paths and operations outside the
+  selected project.
+- **Dark interface**: uses the built-in lightweight dark color scheme.
+
+The client automatically reports the target Windows version, CPU, RAM, screen,
+codepages, free disk space, active project, and detected compilers. This helps
+the model produce software appropriate for the real target computer.
+
+## Build From Source
+
+Prebuilt experimental clients are included in `build`. Building with Visual
+C++ 6.0 using `/MT` is preferred for real Windows 95 hardware because it avoids
+depending on a separately installed modern `MSVCRT.DLL`.
 
 With Visual C++ 6.0:
 
@@ -88,12 +188,7 @@ The MinGW binaries import `MSVCRT.DLL`. If the Libretto does not already have a
 compatible version, use the Visual C++ 6 `/MT` build instead; that is the
 preferred final Windows 95 release build.
 
-Copy `CODEX95W.EXE` to the Libretto and open it. On the first run:
-
-1. Leave the bridge address as `auto`, or enter a local hostname such as
-   `bridge-pc.local:8787` if LAN discovery is blocked.
-2. Select a project folder.
-3. Describe the program you want and click **Build it**.
+## Using Projects
 
 The left sidebar lists sibling project folders next to the active project.
 Select a project to switch instantly, click **New** to create the next available
@@ -101,44 +196,34 @@ Select a project to switch instantly, click **New** to create the next available
 outside Codex95. **Delete project** permanently removes the selected project
 and all files inside it after two confirmations.
 
-The GUI remembers its settings in `CODEX95.INI`. Automatic actions are enabled
-by default. Every file operation remains restricted to the selected project
-folder. Disable **Automatic actions** to confirm writes and commands manually.
-Automatic bridge discovery uses UDP port `8788`; project traffic uses TCP port
-`8787`.
-
-Connection settings, the device name, automatic action approval, and access
-mode are available under **Options > Settings**. The optional **Full computer
-access** mode permits absolute paths and lets Codex run commands or modify and
-delete files outside the selected project. Keep project-only access enabled
-unless a task genuinely needs the rest of the Libretto.
-
-The same settings window includes an optional dark interface designed for the
-classic Windows 95 controls used by Codex95.
-
-At the start of every task, the client sends an automatically collected target
-device profile to the bridge. It includes the Windows version, CPU type, RAM,
-screen size and color depth, codepages, project disk space, and detected build
-tools. Codex treats these as real design constraints. The friendly hardware
-name defaults to `Toshiba Libretto 70CT` and can be changed with `DeviceName`
-in `CODEX95.INI`.
-
-The model is also explicitly told that it is connected through a bridge on a
-separate modern computer, while every provided file and command tool executes
-on the Libretto. It therefore must not assume that software installed on the
-bridge is also available on the Windows 95 machine.
-
 The console client remains available as a fallback:
 
 ```bat
-CODEX95.EXE bridge-pc.local 8787 C:\DEV\CLOCK -y
+CODEX95.EXE 192.168.1.50 8787 C:\DEV\CLOCK -y
 ```
+
+Add `-full` only when the task genuinely requires full-computer access.
+
+## Troubleshooting
+
+- **Cannot find bridge automatically**: enter the bridge PC address manually,
+  confirm both computers are on the same LAN, and allow UDP `8788`.
+- **Cannot connect to bridge**: allow inbound TCP `8787` on the bridge PC's
+  private-network firewall profile.
+- **Bridge says API key is missing**: set `OPENAI_API_KEY` and restart the
+  bridge terminal.
+- **Client fails to start because of MSVCRT**: use a Visual C++ 6 `/MT` build.
+- **Build commands fail on Windows 95**: install a compatible compiler on the
+  target computer; tools installed on the bridge PC are not available there.
+- **Japanese Windows 95 text problems**: prefer ASCII source filenames and
+  explicitly handle the target codepage when non-ASCII text is required.
 
 ## Current Limits
 
 - Text files and action results are currently limited to roughly 30 KB per operation.
 - The bridge uses plain HTTP because Windows 95 cannot handle modern TLS.
-- File access is restricted to the selected project root.
+- File access is restricted to the selected project root unless full-computer
+  access is explicitly enabled.
 - `run_command` executes through `COMMAND.COM`.
 - Automatic mode can execute commands proposed by the model with the project
   directory as the working directory. Commands are not sandboxed on Windows 95,
