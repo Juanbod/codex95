@@ -86,6 +86,15 @@ setx OPENAI_API_KEY "your-api-key"
 Open a new terminal after using `setx`. You can then double-click
 `bridge\START_CODEX95.CMD`.
 
+To avoid saving the API key permanently, run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File bridge\START_SECURE_REAL.ps1
+```
+
+This asks for the key using hidden input and keeps it only in the bridge
+process environment until that window is closed.
+
 ### 2. Test The Bridge Without An API Key
 
 For an offline protocol test without an API key:
@@ -212,6 +221,9 @@ Add `-full` only when the task genuinely requires full-computer access.
   private-network firewall profile.
 - **Bridge says API key is missing**: set `OPENAI_API_KEY` and restart the
   bridge terminal.
+- **OpenAI reports that the quota was exceeded**: API billing and ChatGPT
+  subscriptions are separate. Add API billing or credits to the OpenAI
+  Platform account associated with the key, then retry the task.
 - **Client fails to start because of MSVCRT**: use a Visual C++ 6 `/MT` build.
 - **Build commands fail on Windows 95**: install a compatible compiler on the
   target computer; tools installed on the bridge PC are not available there.
