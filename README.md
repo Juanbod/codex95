@@ -1,243 +1,180 @@
 # Codex95
 
+**A lightweight coding-agent client for Windows 95, powered through a modern
+Windows, macOS, or Linux bridge computer.**
+
+[Русская инструкция](README_RU.md) · [Security](SECURITY.md) ·
+[Update design](UPDATES.md)
+
 > [!WARNING]
-> **Early development / experimental software.** Codex95 can execute commands
-> and modify or delete files on a Windows 95 computer. Keep backups and use it
+> Codex95 is experimental software. It can execute commands and modify or
+> permanently delete files on the Windows 95 computer. Keep backups and use it
 > only on a trusted private network.
 
-> [!NOTE]
-> This project is being developed with substantial AI assistance using an
-> exploratory "vibe coding" workflow. The code has been built and smoke-tested,
-> but it has not yet received a complete independent security audit or broad
-> testing on real Windows 95 hardware.
+Codex95 gives a Windows 95 computer a simple Codex-like interface. Describe a
+program or change in ordinary language, and the client can create files, use
+locally installed compilers, run builds, and launch the result on the retro
+computer.
 
-Codex95 is a thin coding-agent client for Windows 95. The Libretto runs a small
-Win32/Winsock client; a modern Windows, macOS, or Linux computer on the LAN
-handles the OpenAI API.
+The project was created for a Toshiba Libretto 70CT with 24 MB RAM. It is being
+developed with substantial AI assistance using an exploratory "vibe coding"
+workflow and remains under active development.
 
-The project is currently tailored for a Toshiba Libretto 70CT with 24 MB RAM,
-but its client is intended to remain useful on other Windows 95 computers.
+## Start Here
 
-The current client can:
+Codex95 always uses **two computers**:
 
-- accept natural-language tasks in a native Windows 95 GUI;
-- list and read project files;
-- create directories and write files automatically inside the selected project;
-- switch, create, rename, and permanently delete projects from the GUI;
-- optionally access absolute paths across the target computer;
-- discover installed compilers and build tools;
-- run Windows 95 build commands with a two-minute timeout;
-- launch completed GUI programs without blocking Codex95;
-- use a persistent dark interface;
-- save visible chats for every project and model beside the client;
-- remember follow-up context for every project and model across bridge restarts;
-- keep the OpenAI API key off the retro computer.
+| Computer | Runs | Purpose |
+| --- | --- | --- |
+| Windows 95 PC | `CODEX95W.EXE` | Shows the chat and performs file/build actions |
+| Modern Windows, macOS, or Linux computer | Node.js bridge | Securely connects to the OpenAI API |
 
-## Layout
-
-- `client/codex95.c`: dependency-free Windows 95 console client.
-- `client/codex95_gui.c`: native Windows 95 GUI client.
-- `client/CODEX95.ICO` and `client/CODEX95.RC`: classic 256-color application
-  icon and Windows resource file.
-- `bridge/server.mjs`: dependency-free bridge for a modern Node.js computer.
-- `bridge/test.mjs`: protocol smoke test using mock mode.
-- `bridge/START_CODEX95.command`: one-click macOS bridge launcher.
-
-## How It Works
-
-Codex95 has two parts:
-
-1. `CODEX95W.EXE` runs on the Windows 95 computer and performs file operations,
-   builds, tests, and program launches.
-2. `bridge/server.mjs` runs on a modern computer and securely calls the OpenAI
-   API over modern HTTPS.
-
-The Windows 95 client talks to the bridge over plain HTTP on the trusted local
-network. The OpenAI API key never needs to be stored on the retro computer.
-
-Example network:
+The API key stays on the modern computer. The two computers communicate over
+your trusted local network.
 
 ```text
-Toshiba Libretto             Modern bridge PC             OpenAI API
-192.168.1.70  -- LAN -->     192.168.1.50:8787  -- TLS --> Internet
+Windows 95 computer  <-- local HTTP -->  Modern bridge  <-- HTTPS -->  OpenAI
 ```
 
-The addresses above are examples. Use the actual local addresses assigned by
-your router.
+macOS support refers to the **modern bridge side**. The lightweight client
+itself is built for Windows 95.
 
-## Quick Start
+## Five-Minute Setup
 
-### 1. Prepare The Modern Bridge Computer
+### 1. Start The Bridge
 
-Install a current Node.js release on the modern computer, then:
+Install a current [Node.js](https://nodejs.org) release on the modern computer,
+download this repository, then double-click the launcher in the repository
+root:
 
-```powershell
-cd C:\path\to\codex95
-$env:OPENAI_API_KEY="..."
-$env:OPENAI_MODEL="gpt-5.4-mini"
-node bridge/server.mjs
-```
+| Modern computer | Normal launch | Free test without API |
+| --- | --- | --- |
+| Windows | `START_CODEX95_WINDOWS.cmd` | `START_MOCK_WINDOWS.cmd` |
+| macOS | `START_CODEX95_MAC.command` | `START_MOCK_MAC.command` |
+| Linux | `node bridge/server.mjs` | `CODEX95_MOCK=1 node bridge/server.mjs` |
 
-`OPENAI_MODEL` is only the fallback for older clients or clients with an empty
-model setting. Current Codex95 clients select the model for each task.
-
-The bridge listens on TCP port `8787` and advertises itself using UDP port
-`8788`.
-
-#### Windows
-
-The easiest setup is to double-click `bridge\START_CODEX95.CMD`. It starts the
-bridge and opens the local setup page:
+The normal launcher opens:
 
 ```text
 http://127.0.0.1:8787/setup
 ```
 
-Enter the API key there. The setup page is available only on the modern bridge
-PC. The key stays in bridge memory, is never sent to Windows 95, and is
+Enter the OpenAI API key on that page. It is held only in bridge memory and is
 forgotten when the bridge stops.
 
-To save the API key for future PowerShell sessions:
+Keep the bridge window open while using Codex95. If the operating-system
+firewall asks, allow Node.js on private networks only.
 
-```powershell
-setx OPENAI_API_KEY "your-api-key"
-```
+### 2. Prepare The Windows 95 Computer
 
-Open a new terminal after using `setx`. You can then double-click
-`bridge\START_CODEX95.CMD`.
-
-To avoid saving the API key permanently, run:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File bridge\START_SECURE_REAL.ps1
-```
-
-This asks for the key using hidden input and keeps it only in the bridge
-process environment until that window is closed.
-
-If Windows Firewall asks for permission, allow Node.js only on private
-networks.
-
-#### macOS
-
-Install Node.js from [nodejs.org](https://nodejs.org) or with Homebrew:
-
-```bash
-brew install node
-```
-
-In Finder, double-click `bridge/START_CODEX95.command`. It starts the bridge
-and opens the local setup page. Enter the API key there; it remains only in
-bridge memory until the Terminal window is closed.
-
-Alternatively, `bridge/START_SECURE_REAL.command` asks for the API key using
-hidden Terminal input. `bridge/START_MOCK.command` starts the free offline
-mock mode.
-
-If macOS refuses to open a `.command` file after downloading the project, open
-Terminal in the project folder once and run:
-
-```bash
-chmod +x bridge/*.command
-```
-
-Allow incoming connections for Node.js if the macOS firewall asks. To find the
-Mac's Wi-Fi address for manual client configuration:
-
-```bash
-ipconfig getifaddr en0
-```
-
-Automatic discovery normally means the Windows 95 client can keep
-`Host=auto`.
-
-### 2. Test The Bridge Without An API Key
-
-For an offline protocol test without an API key:
-
-```powershell
-$env:CODEX95_MOCK="1"
-node bridge/server.mjs
-```
-
-Or double-click `bridge\START_MOCK.CMD`. Mock mode accepts requests but does not
-contact OpenAI. On macOS, double-click `bridge/START_MOCK.command`. It is the
-safest way to confirm networking and client setup.
-
-### 3. Copy The Client To Windows 95
-
-Copy these files to a folder on the Windows 95 computer using a CF card, SD
-adapter, network share, or other removable media:
+Copy these two files to the same folder on the Windows 95 computer:
 
 ```text
 build\CODEX95W.EXE
 client\CODEX95.INI.example
 ```
 
-Rename `CODEX95.INI.example` to `CODEX95.INI` and place it beside
-`CODEX95W.EXE`. The default configuration uses automatic bridge discovery:
+Rename `CODEX95.INI.example` to `CODEX95.INI`, then open `CODEX95W.EXE`.
 
-```ini
-[Codex95]
-Host=auto
-Port=8787
-Project=C:\DEV\CODEX95
-Automatic=1
-DeviceName=Toshiba Libretto 70CT
-Model=gpt-5.4-mini
-FullAccess=0
-DarkMode=0
+The default `Host=auto` setting normally discovers the bridge automatically.
+If discovery fails, open **Options > Settings** and enter the bridge computer's
+local address, such as `192.168.1.50:8787`.
+
+### 3. Build Something
+
+1. Create or select a project in the left sidebar.
+2. Enter a task such as `Create a small window with a button that plays a sound`.
+3. Click **Build it**.
+
+Start with project-only access. Enable full-computer access only for tasks that
+genuinely need it.
+
+## What It Can Do
+
+- accept natural-language coding tasks in a native Windows 95 GUI;
+- create, read, edit, and delete project files;
+- create, rename, switch, and delete projects;
+- discover installed compilers and build tools;
+- run build commands and launch completed programs on Windows 95;
+- report the target computer's Windows version, CPU, RAM, screen, codepages,
+  disk space, and available compilers to the model;
+- keep separate saved chats and model context for each project;
+- select the OpenAI model from the client;
+- use a lightweight dark interface;
+- optionally allow full access to the Windows 95 computer.
+
+## What It Does Not Do
+
+- It does not run modern OpenAI HTTPS directly from Windows 95.
+- It does not provide a compiler that is not installed on the Windows 95
+  computer.
+- It is not a sandbox. Automatic actions can modify real files.
+- It is not ready to be exposed directly to the internet.
+- One-click updates are planned but not implemented yet.
+
+## Bridge Launch Options
+
+The root launchers are the easiest entry point. More specific launchers live in
+the `bridge` folder:
+
+| File | Purpose |
+| --- | --- |
+| `bridge/START_CODEX95.CMD` | Windows bridge plus browser-based key setup |
+| `bridge/START_SECURE_REAL.ps1` | Windows bridge with hidden API-key input |
+| `bridge/START_MOCK.CMD` | Windows offline mock mode |
+| `bridge/START_CODEX95.command` | macOS bridge plus browser-based key setup |
+| `bridge/START_SECURE_REAL.command` | macOS bridge with hidden API-key input |
+| `bridge/START_MOCK.command` | macOS offline mock mode |
+
+On macOS, if Finder refuses to open a downloaded `.command` file, run this once
+from Terminal:
+
+```bash
+chmod +x *.command bridge/*.command
 ```
 
-If discovery does not work, replace `Host=auto` with the bridge PC's local IP:
+To find the Mac's Wi-Fi address for manual client configuration:
 
-```ini
-Host=192.168.1.50
+```bash
+ipconfig getifaddr en0
 ```
 
-### 4. Start Codex95
+## Client Settings
 
-1. Start the bridge on the modern computer.
-2. Open `CODEX95W.EXE` on Windows 95.
-3. Choose or create a project.
-4. Enter a task and click **Build it**.
+Open **Options > Settings** in `CODEX95W.EXE`:
 
-The status area shows `[FULL ACCESS]` when unrestricted access is enabled.
-Start with project-only access and keep backups of the Windows 95 disk.
+| Setting | Meaning |
+| --- | --- |
+| Bridge address | `auto`, a hostname, or an address such as `192.168.1.50:8787` |
+| Device name | Friendly target-computer name sent with its hardware profile |
+| Model | OpenAI API model used for new tasks |
+| Run actions automatically | Allows proposed file operations and commands without approval |
+| Full computer access | Allows absolute paths and work outside the selected project |
+| Dark interface | Enables the lightweight dark theme |
 
-## Settings
+Visible chat logs are stored in the `CHATS` folder beside `CODEX95W.EXE`.
+Bridge-side conversation state is stored locally in the ignored
+`bridge/.codex95-state.json` file. Neither history file contains the API key.
 
-Open **Options > Settings** inside the GUI:
+## Network And Security
 
-- **Bridge address**: `auto`, a hostname, or an address such as
-  `192.168.1.50:8787`.
-- **Device name**: friendly name included in the hardware profile sent to the
-  model.
-- **Model**: editable model selector. Use `gpt-5.4-nano` for inexpensive tasks,
-  `gpt-5.4-mini` for stronger coding work, or enter another API model name.
-- **Run actions automatically**: allows file writes and commands without an
-  approval prompt.
-- **Full computer access**: permits absolute paths and operations outside the
-  selected project.
-- **Dark interface**: uses the built-in lightweight dark color scheme.
+The bridge listens on TCP port `8787` and advertises itself on UDP port `8788`.
+Plain HTTP is used only between the Windows 95 client and bridge because
+Windows 95 cannot handle modern TLS. The bridge uses modern HTTPS for OpenAI.
 
-Each project and model combination keeps separate conversation history. Visible
-chat logs are stored in the `CHATS` folder beside `CODEX95W.EXE`. Bridge-side
-OpenAI response IDs are stored in the ignored local file
-`bridge/.codex95-state.json`. The API key always remains on the modern bridge
-computer and is never written to either history file.
+Use Codex95 only on a trusted private LAN:
 
-The client automatically reports the target Windows version, CPU, RAM, screen,
-codepages, free disk space, active project, and detected compilers. This helps
-the model produce software appropriate for the real target computer.
+- never forward bridge ports to the internet;
+- keep backups of the Windows 95 disk;
+- prefer project-only access;
+- review [SECURITY.md](SECURITY.md) before enabling automatic full access.
 
-## Build From Source
+## Build The Windows 95 Client
 
-Prebuilt experimental clients are included in `build`. Building with Visual
-C++ 6.0 using `/MT` is preferred for real Windows 95 hardware because it avoids
-depending on a separately installed modern `MSVCRT.DLL`.
+Prebuilt experimental clients are included in `build`.
 
-With Visual C++ 6.0:
+Visual C++ 6.0 with `/MT` is preferred for real Windows 95 hardware because it
+avoids depending on a separately installed modern `MSVCRT.DLL`:
 
 ```bat
 cl /O1 /G5 /GF /W3 /MT client\codex95.c wsock32.lib gdi32.lib /Fe:CODEX95.EXE /link /OPT:REF
@@ -252,70 +189,53 @@ set CC=C:\path\to\mingw32\bin\gcc.exe
 BUILD_MINGW.BAT
 ```
 
-The MinGW build produces:
-
-- `build\CODEX95.EXE`: console fallback.
-- `build\CODEX95W.EXE`: native GUI client.
-
-Run `CODEX95W.EXE /smoke` only for an automated GUI protocol test.
-
-The MinGW binaries import `MSVCRT.DLL`. If the Libretto does not already have a
-compatible version, use the Visual C++ 6 `/MT` build instead; that is the
+The MinGW build imports `MSVCRT.DLL`; the Visual C++ 6 `/MT` build is the
 preferred final Windows 95 release build.
 
-## Using Projects
+## Test And Develop
 
-The left sidebar lists sibling project folders next to the active project.
-Select a project to switch instantly. Click **New** and enter its name, use
-**Rename project** to rename the selected folder, or click **Refresh** after
-changing folders outside Codex95. **Delete project** permanently removes the
-selected project and all files inside it after two confirmations. When the
-active project is deleted, Codex95 switches to another sibling project or
-creates one with a different name.
+Test the bridge protocol without an API key:
 
-The console client remains available as a fallback:
-
-```bat
-CODEX95.EXE 192.168.1.50 8787 C:\DEV\CLOCK -y
+```text
+node bridge/test.mjs
 ```
 
-Add `-full` only when the task genuinely requires full-computer access.
-Set the console client's model with `set CODEX95_MODEL=gpt-5.4-nano`.
+Run the GUI protocol smoke test only with a mock bridge:
 
-## Planned Updates
+```text
+CODEX95W.EXE /smoke
+```
 
-One-click updates and an **Update now** / **Later** notification are planned
-for both the Windows 95 client and the modern bridge. The updater will only be
-enabled after signed manifests, package verification, rollback, and preservation
-of projects, settings, and chats are implemented. See [UPDATES.md](UPDATES.md)
-for the current design.
+Project layout:
+
+| Path | Contents |
+| --- | --- |
+| `client/codex95_gui.c` | Native Windows 95 GUI client |
+| `client/codex95.c` | Console fallback client |
+| `bridge/server.mjs` | Dependency-free modern bridge |
+| `bridge/test.mjs` | Bridge protocol smoke test |
+| `build/` | Prebuilt experimental Windows 95 clients |
 
 ## Troubleshooting
 
-- **Cannot find bridge automatically**: enter the bridge PC address manually,
-  confirm both computers are on the same LAN, and allow UDP `8788`.
-- **Cannot connect to bridge**: allow inbound TCP `8787` on the bridge PC's
-  private-network firewall profile.
-- **Bridge says API key is missing**: set `OPENAI_API_KEY` and restart the
-  bridge terminal.
-- **OpenAI reports that the quota was exceeded**: API billing and ChatGPT
-  subscriptions are separate. Add API billing or credits to the OpenAI
-  Platform account associated with the key, then retry the task.
-- **Client fails to start because of MSVCRT**: use a Visual C++ 6 `/MT` build.
-- **Build commands fail on Windows 95**: install a compatible compiler on the
-  target computer; tools installed on the bridge PC are not available there.
-- **Japanese Windows 95 text problems**: prefer ASCII source filenames and
-  explicitly handle the target codepage when non-ASCII text is required.
+- **Cannot find bridge automatically:** enter the bridge computer's local IP
+  manually and allow UDP `8788`.
+- **Cannot connect to bridge:** allow inbound TCP `8787` on the private network.
+- **Bridge says API key is missing:** open `http://127.0.0.1:8787/setup` on the
+  modern computer and enter it again.
+- **Quota exceeded:** OpenAI API billing is separate from a ChatGPT
+  subscription.
+- **Client fails because of MSVCRT:** use a Visual C++ 6 `/MT` build.
+- **Build command fails:** install a Windows 95-compatible compiler on the
+  target computer.
+- **Japanese Windows 95 text problems:** prefer ASCII filenames and deliberately
+  handle the target codepage for non-ASCII files.
 
 ## Current Limits
 
-- Text files and action results are currently limited to roughly 30 KB per operation.
-- The bridge uses plain HTTP because Windows 95 cannot handle modern TLS.
-- File access is restricted to the selected project root unless full-computer
-  access is explicitly enabled.
+- Text files and action results are limited to roughly 30 KB per operation.
 - `run_command` executes through `COMMAND.COM`.
-- Automatic mode can execute commands proposed by the model with the project
-  directory as the working directory. Commands are not sandboxed on Windows 95,
-  so use the bridge only on a trusted private network.
-- Service messages use plain ASCII so they remain readable on Japanese Windows
-  95. Non-ASCII project files still require deliberate codepage handling.
+- Commands are not sandboxed on Windows 95.
+- Service messages use plain ASCII for compatibility with Japanese Windows 95.
+
+Codex95 is licensed under the [MIT License](LICENSE).
