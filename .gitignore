@@ -1,6 +1,7 @@
 # Local toolchains and machine-specific configuration
 .tools/
 build/CODEX95.INI
+build/CHATS/
 CODEX95.INI
 bridge/.codex95-state.json
 
