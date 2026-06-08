@@ -12,7 +12,8 @@
 > testing on real Windows 95 hardware.
 
 Codex95 is a thin coding-agent client for Windows 95. The Libretto runs a small
-Win32/Winsock client; a modern computer on the LAN handles the OpenAI API.
+Win32/Winsock client; a modern Windows, macOS, or Linux computer on the LAN
+handles the OpenAI API.
 
 The project is currently tailored for a Toshiba Libretto 70CT with 24 MB RAM,
 but its client is intended to remain useful on other Windows 95 computers.
@@ -40,6 +41,7 @@ The current client can:
   icon and Windows resource file.
 - `bridge/server.mjs`: dependency-free bridge for a modern Node.js computer.
 - `bridge/test.mjs`: protocol smoke test using mock mode.
+- `bridge/START_CODEX95.command`: one-click macOS bridge launcher.
 
 ## How It Works
 
@@ -65,7 +67,7 @@ your router.
 
 ## Quick Start
 
-### 1. Prepare The Modern Bridge PC
+### 1. Prepare The Modern Bridge Computer
 
 Install a current Node.js release on the modern computer, then:
 
@@ -80,8 +82,9 @@ node bridge/server.mjs
 model setting. Current Codex95 clients select the model for each task.
 
 The bridge listens on TCP port `8787` and advertises itself using UDP port
-`8788`. If Windows Firewall asks for permission, allow Node.js only on private
-networks.
+`8788`.
+
+#### Windows
 
 The easiest setup is to double-click `bridge\START_CODEX95.CMD`. It starts the
 bridge and opens the local setup page:
@@ -112,6 +115,42 @@ powershell -ExecutionPolicy Bypass -File bridge\START_SECURE_REAL.ps1
 This asks for the key using hidden input and keeps it only in the bridge
 process environment until that window is closed.
 
+If Windows Firewall asks for permission, allow Node.js only on private
+networks.
+
+#### macOS
+
+Install Node.js from [nodejs.org](https://nodejs.org) or with Homebrew:
+
+```bash
+brew install node
+```
+
+In Finder, double-click `bridge/START_CODEX95.command`. It starts the bridge
+and opens the local setup page. Enter the API key there; it remains only in
+bridge memory until the Terminal window is closed.
+
+Alternatively, `bridge/START_SECURE_REAL.command` asks for the API key using
+hidden Terminal input. `bridge/START_MOCK.command` starts the free offline
+mock mode.
+
+If macOS refuses to open a `.command` file after downloading the project, open
+Terminal in the project folder once and run:
+
+```bash
+chmod +x bridge/*.command
+```
+
+Allow incoming connections for Node.js if the macOS firewall asks. To find the
+Mac's Wi-Fi address for manual client configuration:
+
+```bash
+ipconfig getifaddr en0
+```
+
+Automatic discovery normally means the Windows 95 client can keep
+`Host=auto`.
+
 ### 2. Test The Bridge Without An API Key
 
 For an offline protocol test without an API key:
@@ -122,7 +161,8 @@ node bridge/server.mjs
 ```
 
 Or double-click `bridge\START_MOCK.CMD`. Mock mode accepts requests but does not
-contact OpenAI. It is the safest way to confirm networking and client setup.
+contact OpenAI. On macOS, double-click `bridge/START_MOCK.command`. It is the
+safest way to confirm networking and client setup.
 
 ### 3. Copy The Client To Windows 95
 
