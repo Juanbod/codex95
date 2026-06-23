@@ -249,12 +249,19 @@ Project layout:
   target computer.
 - **Japanese Windows 95 text problems:** prefer ASCII filenames and deliberately
   handle the target codepage for non-ASCII files.
+- **Russian or Japanese chat text looks broken:** Codex95 converts bridge UTF-8
+  messages to the Windows 95 system ANSI codepage before showing them. Japanese
+  text needs a Japanese/CP932 system or matching fonts. Russian text needs a
+  Russian/CP1251 system or matching fonts. A single ANSI Windows 95 install
+  usually cannot display both scripts perfectly at the same time.
 
 ## Current Limits
 
 - Text files and action results are limited to roughly 30 KB per operation.
 - `run_command` executes through `COMMAND.COM`.
 - Commands are not sandboxed on Windows 95.
-- Service messages use plain ASCII for compatibility with Japanese Windows 95.
+- Service messages use plain ASCII for compatibility with Windows 95.
+- Chat prompts, replies, and command results are converted between UTF-8 and
+  the local Windows ANSI codepage when the operating system supports it.
 
 Codex95 is licensed under the [MIT License](LICENSE).

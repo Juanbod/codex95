@@ -17,6 +17,10 @@
 #define BIG_SIZE 49152
 #define RESULT_SIZE 32000
 
+#ifndef CP_UTF8
+#define CP_UTF8 65001
+#endif
+
 typedef struct {
     char host[128];
     int port;
@@ -104,6 +108,124 @@ static int b64_decode(const char *src, unsigned char *dst, size_t cap) {
     }
     dst[o] = 0;
     return (int)o;
+}
+
+static void utf8_put(unsigned int code, char *dst, size_t cap, size_t *used) {
+    if (code < 0x80) {
+        if (*used + 1 < cap) dst[(*used)++] = (char)code;
+    } else if (code < 0x800) {
+        if (*used + 2 < cap) {
+            dst[(*used)++] = (char)(0xC0 | (code >> 6));
+            dst[(*used)++] = (char)(0x80 | (code & 0x3F));
+        }
+    } else {
+        if (*used + 3 < cap) {
+            dst[(*used)++] = (char)(0xE0 | (code >> 12));
+            dst[(*used)++] = (char)(0x80 | ((code >> 6) & 0x3F));
+            dst[(*used)++] = (char)(0x80 | (code & 0x3F));
+        }
+    }
+}
+
+static void cp1251_to_utf8_fallback(const char *src, char *dst, size_t cap) {
+    size_t used = 0;
+    while (*src && used + 1 < cap) {
+        unsigned char c = (unsigned char)*src++;
+        unsigned int code = c;
+        if (c >= 0xC0) code = 0x0410 + (c - 0xC0);
+        else if (c == 0xA8) code = 0x0401;
+        else if (c == 0xB8) code = 0x0451;
+        else if (c >= 0x80) code = '?';
+        utf8_put(code, dst, cap, &used);
+    }
+    dst[used] = 0;
+}
+
+static int utf8_next(const unsigned char **src) {
+    const unsigned char *s = *src;
+    int code;
+    if (!*s) return 0;
+    if (*s < 0x80) {
+        (*src)++;
+        return *s;
+    }
+    if ((*s & 0xE0) == 0xC0 && s[1]) {
+        code = ((*s & 0x1F) << 6) | (s[1] & 0x3F);
+        *src += 2;
+        return code;
+    }
+    if ((*s & 0xF0) == 0xE0 && s[1] && s[2]) {
+        code = ((*s & 0x0F) << 12) | ((s[1] & 0x3F) << 6) | (s[2] & 0x3F);
+        *src += 3;
+        return code;
+    }
+    (*src)++;
+    return '?';
+}
+
+static void utf8_to_cp1251_fallback(const char *src, char *dst, size_t cap) {
+    const unsigned char *p = (const unsigned char *)src;
+    size_t used = 0;
+    while (*p && used + 1 < cap) {
+        int code = utf8_next(&p);
+        if (code < 0x80) dst[used++] = (char)code;
+        else if (code >= 0x0410 && code <= 0x044F) dst[used++] = (char)(0xC0 + code - 0x0410);
+        else if (code == 0x0401) dst[used++] = (char)0xA8;
+        else if (code == 0x0451) dst[used++] = (char)0xB8;
+        else dst[used++] = '?';
+    }
+    dst[used] = 0;
+}
+
+static void local_to_utf8(const char *src, char *dst, size_t cap) {
+    int wlen, ok;
+    WCHAR *wide;
+    if (!src || !dst || !cap) return;
+    wlen = MultiByteToWideChar(CP_ACP, 0, src, -1, NULL, 0);
+    if (wlen > 0) {
+        wide = (WCHAR *)malloc(sizeof(WCHAR) * wlen);
+        if (wide) {
+            MultiByteToWideChar(CP_ACP, 0, src, -1, wide, wlen);
+            ok = WideCharToMultiByte(CP_UTF8, 0, wide, -1, dst, (int)cap, NULL, NULL);
+            free(wide);
+            if (ok > 0) return;
+        }
+    }
+    if (GetACP() == 1251) cp1251_to_utf8_fallback(src, dst, cap);
+    else {
+        strncpy(dst, src, cap - 1);
+        dst[cap - 1] = 0;
+    }
+}
+
+static void utf8_to_local(const char *src, char *dst, size_t cap) {
+    int wlen, ok;
+    WCHAR *wide;
+    if (!src || !dst || !cap) return;
+    wlen = MultiByteToWideChar(CP_UTF8, 0, src, -1, NULL, 0);
+    if (wlen > 0) {
+        wide = (WCHAR *)malloc(sizeof(WCHAR) * wlen);
+        if (wide) {
+            MultiByteToWideChar(CP_UTF8, 0, src, -1, wide, wlen);
+            ok = WideCharToMultiByte(CP_ACP, 0, wide, -1, dst, (int)cap, NULL, NULL);
+            free(wide);
+            if (ok > 0) return;
+        }
+    }
+    if (GetACP() == 1251) utf8_to_cp1251_fallback(src, dst, cap);
+    else {
+        strncpy(dst, src, cap - 1);
+        dst[cap - 1] = 0;
+    }
+}
+
+static void convert_inplace_utf8_to_local(char *text, size_t cap) {
+    char *tmp = (char *)malloc(cap);
+    if (!tmp) return;
+    utf8_to_local(text, tmp, cap);
+    strncpy(text, tmp, cap - 1);
+    text[cap - 1] = 0;
+    free(tmp);
 }
 
 static const char *field(const char *text, const char *name, char *out, size_t cap) {
@@ -509,6 +631,7 @@ static void execute_action(const Config *cfg, const char *reply, char *result, s
     char full[MAX_PATH];
     field(reply, "action", action, sizeof(action));
     field(reply, "path", path, sizeof(path));
+    convert_inplace_utf8_to_local(path, sizeof(path));
 
     if (!strcmp(action, "list_dir")) {
         if (!resolve_path(cfg, path, full)) strcpy(result, "ERROR: path outside project root");
@@ -547,10 +670,12 @@ static void execute_action(const Config *cfg, const char *reply, char *result, s
         else sprintf(result, "ERROR: deletion failed (%lu)", GetLastError());
     } else if (!strcmp(action, "run_command")) {
         field(reply, "command", command, sizeof(command));
+        convert_inplace_utf8_to_local(command, sizeof(command));
         if (!confirm(cfg, "run_command", command)) strcpy(result, "DENIED by user");
         else run_command(cfg, command, result, cap);
     } else if (!strcmp(action, "run_program")) {
         field(reply, "command", command, sizeof(command));
+        convert_inplace_utf8_to_local(command, sizeof(command));
         if (!confirm(cfg, "run_program", command)) strcpy(result, "DENIED by user");
         else run_program(cfg, command, result);
     } else if (!strcmp(action, "system_info")) {
@@ -573,6 +698,8 @@ int main(int argc, char **argv) {
     char body[BIG_SIZE], reply[BIG_SIZE], session[128], status[64];
     char message_b64[BIG_SIZE], message[BIG_SIZE], result[RESULT_SIZE];
     char result_b64[BIG_SIZE];
+    char prompt_utf8[BIG_SIZE], root_utf8[BUF_SIZE];
+    char *result_utf8;
 
     if (argc < 2) { usage(); return 1; }
     memset(&cfg, 0, sizeof(cfg));
@@ -598,12 +725,15 @@ int main(int argc, char **argv) {
         if (!strcmp(prompt, "/quit") || !strcmp(prompt, "/exit")) break;
         if (!prompt[0]) continue;
 
-        url_encode(prompt, prompt_enc, sizeof(prompt_enc));
-        url_encode(cfg.root, root_enc, sizeof(root_enc));
+        local_to_utf8(prompt, prompt_utf8, sizeof(prompt_utf8));
+        local_to_utf8(cfg.root, root_utf8, sizeof(root_utf8));
+        url_encode(prompt_utf8, prompt_enc, sizeof(prompt_enc));
+        url_encode(root_utf8, root_enc, sizeof(root_enc));
         {
-            char profile[BUF_SIZE], profile_b64[BUF_SIZE * 2], model_enc[256];
+            char profile[BUF_SIZE], profile_utf8[BIG_SIZE], profile_b64[BUF_SIZE * 2], model_enc[256];
             device_profile(&cfg, profile, sizeof(profile));
-            b64_encode((unsigned char *)profile, strlen(profile), profile_b64, sizeof(profile_b64));
+            local_to_utf8(profile, profile_utf8, sizeof(profile_utf8));
+            b64_encode((unsigned char *)profile_utf8, strlen(profile_utf8), profile_b64, sizeof(profile_b64));
             url_encode(cfg.model, model_enc, sizeof(model_enc));
             _snprintf(body, sizeof(body) - 1, "prompt=%s&root=%s&profile=%s&access=%s&model=%s",
                 prompt_enc, root_enc, profile_b64, cfg.full_access ? "full" : "project",
@@ -621,12 +751,14 @@ int main(int argc, char **argv) {
             if (!strcmp(status, "message")) {
                 field(reply, "message", message_b64, sizeof(message_b64));
                 b64_decode(message_b64, (unsigned char *)message, sizeof(message));
+                convert_inplace_utf8_to_local(message, sizeof(message));
                 printf("\n%s\n", message);
                 break;
             }
             if (!strcmp(status, "error")) {
                 field(reply, "message", message_b64, sizeof(message_b64));
                 b64_decode(message_b64, (unsigned char *)message, sizeof(message));
+                convert_inplace_utf8_to_local(message, sizeof(message));
                 printf("\nERROR: %s\n", message);
                 break;
             }
@@ -636,7 +768,14 @@ int main(int argc, char **argv) {
             }
 
             execute_action(&cfg, reply, result, sizeof(result));
-            b64_encode((unsigned char *)result, strlen(result), result_b64, sizeof(result_b64));
+            result_utf8 = (char *)malloc(BIG_SIZE);
+            if (result_utf8) {
+                local_to_utf8(result, result_utf8, BIG_SIZE);
+                b64_encode((unsigned char *)result_utf8, strlen(result_utf8), result_b64, sizeof(result_b64));
+                free(result_utf8);
+            } else {
+                b64_encode((unsigned char *)result, strlen(result), result_b64, sizeof(result_b64));
+            }
             _snprintf(body, sizeof(body) - 1, "session=%s&result=%s", session, result_b64);
             body[sizeof(body) - 1] = 0;
             if (!http_post(&cfg, "/session/continue", body, reply, sizeof(reply))) {

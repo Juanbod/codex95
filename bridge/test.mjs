@@ -72,6 +72,17 @@ try {
     model: "gpt-5.4-nano",
   });
   assert.equal(Buffer.from(modelCheck.message, "base64url").toString("utf8"), "Selected model: gpt-5.4-nano");
+  const languageCheck = await post("/session/start", {
+    prompt: "language smoke",
+    root: "C:\\DEV\\LANG",
+    profile,
+    access: "project",
+    model: "gpt-5.4-nano",
+  });
+  assert.equal(
+    Buffer.from(languageCheck.message, "base64url").toString("utf8"),
+    "Language smoke: Привет мир / こんにちは世界",
+  );
   const start = await post("/session/start", { prompt: "make hello", root: "C:\\DEV\\DEMO", profile, access: "project", model: "gpt-5.4-nano" });
   assert.equal(start.status, "action");
   assert.equal(start.action, "write_file");

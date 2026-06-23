@@ -272,6 +272,9 @@ async function continueOpenAI(session, result) {
 }
 
 function startMock(session, prompt) {
+  if (prompt.toLowerCase().includes("language smoke")) {
+    return { status: "message", session: session.id, message: b64("Language smoke: Привет мир / こんにちは世界") };
+  }
   if (prompt.toLowerCase().includes("model smoke")) {
     return { status: "message", session: session.id, message: b64(`Selected model: ${session.model}`) };
   }
