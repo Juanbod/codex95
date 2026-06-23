@@ -4,7 +4,7 @@
 Windows, macOS, or Linux bridge computer.**
 
 [Русская инструкция](README_RU.md) · [Security](SECURITY.md) ·
-[Update design](UPDATES.md)
+[Update design](UPDATES.md) · [Codex95 Link](CODEX95_LINK.md)
 
 > [!WARNING]
 > Codex95 is experimental software. It can execute commands and modify or
