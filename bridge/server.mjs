@@ -11,6 +11,7 @@ const DEFAULT_MODEL = process.env.OPENAI_MODEL || "gpt-5.4-mini";
 const MOCK = process.env.CODEX95_MOCK === "1";
 const sessions = new Map();
 const STATE_PATH = new URL(".codex95-state.json", import.meta.url);
+const CLIENT_DIR = new URL("../build/", import.meta.url);
 const SESSION_TTL_MS = 30 * 60 * 1000;
 const MAX_REQUEST_BYTES = 128 * 1024;
 
@@ -110,6 +111,20 @@ function sendHtml(res, body, status = 200) {
     "Connection": "close",
   });
   res.end(body);
+}
+
+function sendFile(res, fileUrl) {
+  try {
+    const stat = fs.statSync(fileUrl);
+    res.writeHead(200, {
+      "Content-Type": "application/octet-stream",
+      "Content-Length": stat.size,
+      "Connection": "close",
+    });
+    fs.createReadStream(fileUrl).pipe(res);
+  } catch {
+    send(res, { status: "error", message: b64("file not found") }, 404);
+  }
 }
 
 function isLocalRequest(req) {
@@ -320,6 +335,12 @@ const server = http.createServer(async (req, res) => {
   try {
     if (req.method === "GET" && req.url === "/health") {
       return send(res, { status: "ok", mode: MOCK ? "mock" : "openai", model: DEFAULT_MODEL, key: runtimeKey ? "loaded" : "missing" });
+    }
+    if (req.method === "GET" && req.url === "/client/CODEX95W.EXE") {
+      return sendFile(res, new URL("CODEX95W.EXE", CLIENT_DIR));
+    }
+    if (req.method === "GET" && req.url === "/client/CODEX95.EXE") {
+      return sendFile(res, new URL("CODEX95.EXE", CLIENT_DIR));
     }
     if (req.method === "GET" && req.url === "/setup") {
       if (!isLocalRequest(req)) return sendHtml(res, "<h1>Local access only</h1>", 403);

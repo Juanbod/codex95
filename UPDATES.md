@@ -1,10 +1,26 @@
 # Codex95 Update Design
 
-One-click updates are planned for both the Windows 95 client and the modern
-bridge. They must not silently replace executable files or trust an unsigned
-download.
+Codex95 currently has a simple local-network updater for the Windows 95 GUI
+client. The modern bridge serves `build/CODEX95W.EXE` at
+`/client/CODEX95W.EXE`, and the Windows 95 client can download it from
+**Options > Update Codex95...**.
 
-## Intended User Experience
+This is a development convenience for trusted Ethernet/LAN use. It is not yet a
+full signed release-update system.
+
+## Current Update Flow
+
+1. The user starts the bridge on the modern computer.
+2. The user chooses **Options > Update Codex95...** on Windows 95.
+3. The client downloads `/client/CODEX95W.EXE` to `CODEX95W.NEW`.
+4. The client writes `APPLYUPD.BAT`, exits, and lets the batch file replace the
+   old `CODEX95W.EXE`.
+5. The batch file starts the new `CODEX95W.EXE`.
+
+The current updater preserves `CODEX95.INI`, chats, projects, and bridge state.
+It only replaces the GUI client executable.
+
+## Intended Release User Experience
 
 1. Codex95 checks a small signed release manifest through the modern bridge.
 2. When a newer compatible release exists, the client shows its version and
@@ -26,5 +42,5 @@ download.
   preserved.
 - Every release remains manually downloadable as a recovery option.
 
-The update mechanism is intentionally not enabled until package signing,
-rollback, and compatibility checks are implemented and tested.
+The current local updater is intentionally explicit and manual until package
+signing, rollback, and compatibility checks are implemented and tested.

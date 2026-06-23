@@ -101,6 +101,8 @@ genuinely need it.
 - keep separate saved chats and model context for each project;
 - select the OpenAI model from the client;
 - use a lightweight dark interface;
+- change the client text size for small retro screens;
+- update the Windows 95 GUI client from the bridge over Ethernet;
 - optionally allow full access to the Windows 95 computer.
 
 ## What It Does Not Do
@@ -110,7 +112,7 @@ genuinely need it.
   computer.
 - It is not a sandbox. Automatic actions can modify real files.
 - It is not ready to be exposed directly to the internet.
-- One-click updates are planned but not implemented yet.
+- Bridge self-updates and signed release manifests are not implemented yet.
 
 ## Bridge Launch Options
 
@@ -151,10 +153,27 @@ Open **Options > Settings** in `CODEX95W.EXE`:
 | Run actions automatically | Allows proposed file operations and commands without approval |
 | Full computer access | Allows absolute paths and work outside the selected project |
 | Dark interface | Enables the lightweight dark theme |
+| Text size | Scales the main client UI text |
 
 Visible chat logs are stored in the `CHATS` folder beside `CODEX95W.EXE`.
 Bridge-side conversation state is stored locally in the ignored
 `bridge/.codex95-state.json` file. Neither history file contains the API key.
+
+## Updating The Windows 95 Client
+
+The bridge can serve the current prebuilt client from `build\CODEX95W.EXE`.
+This is meant for trusted local Ethernet use while developing and testing.
+
+1. Rebuild or update `build\CODEX95W.EXE` on the modern bridge computer.
+2. Start the bridge normally and keep it open.
+3. On the Windows 95 computer, open `CODEX95W.EXE`.
+4. Choose **Options > Update Codex95...**.
+5. Confirm the prompt. The client downloads `CODEX95W.NEW`, starts
+   `APPLYUPD.BAT`, closes, replaces `CODEX95W.EXE`, and starts again.
+
+The updater preserves `CODEX95.INI`, chats, projects, and bridge state. It only
+replaces the GUI executable. If the old client cannot reach the bridge, copy the
+new `build\CODEX95W.EXE` manually as a recovery path.
 
 ## Network And Security
 

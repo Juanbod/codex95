@@ -198,13 +198,19 @@ static int http_post(const Config *cfg, const char *path, const char *body,
     char raw[BIG_SIZE];
     int got, total = 0, body_len;
     char *payload;
+    unsigned long numeric_addr;
 
-    he = gethostbyname(cfg->host);
-    if (!he) return 0;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_port = htons((unsigned short)cfg->port);
-    memcpy(&addr.sin_addr, he->h_addr, he->h_length);
+    numeric_addr = inet_addr(cfg->host);
+    if (numeric_addr != INADDR_NONE) {
+        addr.sin_addr.s_addr = numeric_addr;
+    } else {
+        he = gethostbyname(cfg->host);
+        if (!he) return 0;
+        memcpy(&addr.sin_addr, he->h_addr, he->h_length);
+    }
 
     sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock == INVALID_SOCKET) return 0;
