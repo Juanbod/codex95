@@ -1599,7 +1599,7 @@ static LRESULT CALLBACK settings_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_CTLCOLORSTATIC:
     case WM_CTLCOLORBTN:
         {
-            HBRUSH brush = control_color((HDC)wp, 0);
+            HBRUSH brush = control_color((HDC)wp, (HWND)lp == g_transcript);
             if (brush) return (LRESULT)brush;
         }
         break;
@@ -1889,7 +1889,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_CTLCOLORSTATIC:
     case WM_CTLCOLORBTN:
         {
-            HBRUSH brush = control_color((HDC)wp, 0);
+            HBRUSH brush = control_color((HDC)wp, (HWND)lp == g_transcript);
             if (brush) return (LRESULT)brush;
         }
         break;
