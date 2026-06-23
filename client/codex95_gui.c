@@ -347,7 +347,7 @@ static HBRUSH control_color(HDC dc, int edit) {
     if (!g_dark_mode) return NULL;
     SetTextColor(dc, RGB(230, 230, 230));
     SetBkColor(dc, edit ? RGB(32, 34, 38) : RGB(45, 47, 52));
-    SetBkMode(dc, TRANSPARENT);
+    SetBkMode(dc, edit ? OPAQUE : TRANSPARENT);
     return edit ? g_dark_edit_brush : g_dark_brush;
 }
 
