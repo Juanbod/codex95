@@ -1490,6 +1490,7 @@ static LRESULT CALLBACK settings_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             WS_CHILD | WS_VISIBLE | WS_VSCROLL | CBS_DROPDOWN,
             120, 76, 230, 120, hwnd, (HMENU)IDC_SET_MODEL, NULL, NULL);
         SendMessage(child, WM_SETFONT, (WPARAM)font, TRUE);
+        SendMessage(child, CB_ADDSTRING, 0, (LPARAM)"gpt-5.5");
         SendMessage(child, CB_ADDSTRING, 0, (LPARAM)"gpt-5.4-nano");
         SendMessage(child, CB_ADDSTRING, 0, (LPARAM)"gpt-5.4-mini");
         SendMessage(child, CB_ADDSTRING, 0, (LPARAM)"gpt-5.4");

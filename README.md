@@ -149,7 +149,7 @@ Open **Options > Settings** in `CODEX95W.EXE`:
 | --- | --- |
 | Bridge address | `auto`, a hostname, or an address such as `192.168.1.50:8787` |
 | Device name | Friendly target-computer name sent with its hardware profile |
-| Model | OpenAI API model used for new tasks |
+| Model | OpenAI API model used for new tasks; choose from the list or type another model ID |
 | Run actions automatically | Allows proposed file operations and commands without approval |
 | Full computer access | Allows absolute paths and work outside the selected project |
 | Dark interface | Enables the lightweight dark theme |
