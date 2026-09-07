@@ -1,2 +1,26 @@
 #define IDI_CODEX95 1
 IDI_CODEX95 ICON "CODEX95.ICO"
+
+1 VERSIONINFO
+FILEVERSION 0,4,0,0
+PRODUCTVERSION 0,4,0,0
+FILEOS 0x00000004L
+FILETYPE 0x00000001L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904E4"
+        BEGIN
+            VALUE "FileDescription", "Codex95 Windows 95 client\0"
+            VALUE "FileVersion", "0.4.0\0"
+            VALUE "InternalName", "Codex95\0"
+            VALUE "LegalCopyright", "MIT License\0"
+            VALUE "ProductName", "Codex95\0"
+            VALUE "ProductVersion", "0.4.0\0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1252
+    END
+END

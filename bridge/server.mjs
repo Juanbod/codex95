@@ -7,7 +7,21 @@ const PORT = Number(process.env.CODEX95_PORT || 8787);
 const DISCOVERY_PORT = Number(process.env.CODEX95_DISCOVERY_PORT || 8788);
 const HOST = process.env.CODEX95_HOST || "0.0.0.0";
 let runtimeKey = process.env.OPENAI_API_KEY || "";
-const DEFAULT_MODEL = process.env.OPENAI_MODEL || "gpt-5.4-mini";
+const CLIENT_VERSION = fs.readFileSync(new URL("../VERSION", import.meta.url), "ascii").trim();
+const MODELS = [
+  "gpt-5.6-luna",
+  "gpt-5.6-terra",
+  "gpt-5.6",
+  "gpt-5.6-sol",
+  "gpt-6-astra",
+  "chat-latest",
+  "gpt-5.5",
+  "gpt-5.5-pro",
+  "gpt-5.4-mini",
+  "gpt-5.4",
+  "gpt-5.4-nano",
+];
+const DEFAULT_MODEL = process.env.OPENAI_MODEL || MODELS[0];
 const MOCK = process.env.CODEX95_MOCK === "1";
 const sessions = new Map();
 const STATE_PATH = new URL(".codex95-state.json", import.meta.url);
@@ -82,8 +96,7 @@ function clientText(text) {
   return String(text)
     .replace(/[\u2018\u2019]/g, "'")
     .replace(/[\u201C\u201D]/g, '"')
-    .replace(/[\u2013\u2014]/g, "-")
-    .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, "?");
+    .replace(/[\u2013\u2014]/g, "-");
 }
 
 function protocol(fields) {
@@ -97,7 +110,7 @@ function oneLine(value) {
 function send(res, fields, status = 200) {
   const body = protocol(fields);
   res.writeHead(status, {
-    "Content-Type": "text/plain; charset=us-ascii",
+    "Content-Type": "text/plain; charset=utf-8",
     "Content-Length": Buffer.byteLength(body),
     "Connection": "close",
   });
@@ -125,6 +138,19 @@ function sendFile(res, fileUrl) {
   } catch {
     send(res, { status: "error", message: b64("file not found") }, 404);
   }
+}
+
+function clientManifest() {
+  const file = new URL("CODEX95W.EXE", CLIENT_DIR);
+  const data = fs.readFileSync(file);
+  return {
+    status: "ok",
+    version: CLIENT_VERSION,
+    size: data.length,
+    sha256: crypto.createHash("sha256").update(data).digest("hex"),
+    models: b64(MODELS.join("\n")),
+    default_model: DEFAULT_MODEL,
+  };
 }
 
 function isLocalRequest(req) {
@@ -184,7 +210,8 @@ Commands run through COMMAND.COM. Avoid PowerShell, Unix shell syntax, Node.js, 
 Use system_info before the first build when the available compiler is unknown.
 Use run_command for builds and short tests. Use run_program to launch completed GUI applications.
 Prefer ASCII-only source code and filenames unless the user explicitly requests another encoding.
-Never delete files unless the user explicitly asks. Briefly summarize completed work in plain ASCII English.`;
+Never delete files unless the user explicitly asks. Reply in the user's language and keep the final summary concise.
+Format chat replies for an 800x480 plain-text window: use short paragraphs and simple lists with real line breaks, and avoid tables.`;
 }
 
 async function openaiRequest(payload) {
@@ -224,10 +251,19 @@ async function openaiRequest(payload) {
 
 function nextFromResponse(session, response) {
   session.responseId = response.id;
+  if (["failed", "cancelled", "incomplete"].includes(response.status)) {
+    const reason = response.error?.message || response.incomplete_details?.reason || response.status;
+    return { status: "error", session: session.id, message: b64(clientText(`OpenAI response ${reason}`)) };
+  }
   const call = response.output?.find((item) => item.type === "function_call");
   if (call) {
     session.callId = call.call_id;
-    const args = JSON.parse(call.arguments || "{}");
+    let args;
+    try {
+      args = JSON.parse(call.arguments || "{}");
+    } catch {
+      return { status: "error", session: session.id, message: b64("OpenAI returned invalid tool arguments.") };
+    }
     const fields = { status: "action", session: session.id, action: call.name };
     if (args.path !== undefined) fields.path = oneLine(args.path);
     if (args.command !== undefined) fields.command = oneLine(args.command);
@@ -255,7 +291,16 @@ async function startOpenAI(session, prompt) {
   };
   const previous = conversations.get(session.key);
   if (previous) payload.previous_response_id = previous;
-  const response = await openaiRequest(payload);
+  let response;
+  try {
+    response = await openaiRequest(payload);
+  } catch (error) {
+    if (!previous || !/previous|response.*(?:not found|expired|exist)/i.test(error.message)) throw error;
+    conversations.delete(session.key);
+    saveConversations();
+    delete payload.previous_response_id;
+    response = await openaiRequest(payload);
+  }
   return nextFromResponse(session, response);
 }
 
@@ -273,7 +318,7 @@ async function continueOpenAI(session, result) {
 
 function startMock(session, prompt) {
   if (prompt.toLowerCase().includes("language smoke")) {
-    return { status: "message", session: session.id, message: b64("Language smoke: Привет мир / こんにちは世界") };
+    return { status: "message", session: session.id, message: b64(clientText("Language smoke: Привет мир / こんにちは世界")) };
   }
   if (prompt.toLowerCase().includes("model smoke")) {
     return { status: "message", session: session.id, message: b64(`Selected model: ${session.model}`) };
@@ -337,7 +382,10 @@ function continueMock(session, result) {
 const server = http.createServer(async (req, res) => {
   try {
     if (req.method === "GET" && req.url === "/health") {
-      return send(res, { status: "ok", mode: MOCK ? "mock" : "openai", model: DEFAULT_MODEL, key: runtimeKey ? "loaded" : "missing" });
+      return send(res, { status: "ok", mode: MOCK ? "mock" : "openai", model: DEFAULT_MODEL, version: CLIENT_VERSION, key: runtimeKey ? "loaded" : "missing" });
+    }
+    if ((req.method === "GET" || req.method === "POST") && req.url === "/client/manifest") {
+      return send(res, clientManifest());
     }
     if (req.method === "GET" && req.url === "/client/CODEX95W.EXE") {
       return sendFile(res, new URL("CODEX95W.EXE", CLIENT_DIR));
@@ -365,7 +413,9 @@ const server = http.createServer(async (req, res) => {
       const model = /^[A-Za-z0-9._-]{1,80}$/.test(form.model || "") ? form.model : DEFAULT_MODEL;
       const session = { id, root: form.root, profile, access, model, key: `${form.root.toLowerCase()}|${model}`, touchedAt: Date.now() };
       sessions.set(id, session);
-      return send(res, MOCK ? startMock(session, form.prompt) : await startOpenAI(session, form.prompt));
+      const reply = MOCK ? startMock(session, form.prompt) : await startOpenAI(session, form.prompt);
+      if (reply.status === "message" || reply.status === "error") sessions.delete(id);
+      return send(res, reply);
     }
     if (req.method === "POST" && req.url === "/session/continue") {
       const form = await readForm(req);

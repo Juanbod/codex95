@@ -16,10 +16,7 @@
 #define BUF_SIZE 4096
 #define BIG_SIZE 49152
 #define RESULT_SIZE 32000
-
-#ifndef CP_UTF8
-#define CP_UTF8 65001
-#endif
+#define DEFAULT_MODEL "gpt-5.6-luna"
 
 typedef struct {
     char host[128];
@@ -127,20 +124,6 @@ static void utf8_put(unsigned int code, char *dst, size_t cap, size_t *used) {
     }
 }
 
-static void cp1251_to_utf8_fallback(const char *src, char *dst, size_t cap) {
-    size_t used = 0;
-    while (*src && used + 1 < cap) {
-        unsigned char c = (unsigned char)*src++;
-        unsigned int code = c;
-        if (c >= 0xC0) code = 0x0410 + (c - 0xC0);
-        else if (c == 0xA8) code = 0x0401;
-        else if (c == 0xB8) code = 0x0451;
-        else if (c >= 0x80) code = '?';
-        utf8_put(code, dst, cap, &used);
-    }
-    dst[used] = 0;
-}
-
 static int utf8_next(const unsigned char **src) {
     const unsigned char *s = *src;
     int code;
@@ -149,74 +132,80 @@ static int utf8_next(const unsigned char **src) {
         (*src)++;
         return *s;
     }
-    if ((*s & 0xE0) == 0xC0 && s[1]) {
+    if ((*s & 0xE0) == 0xC0 && (s[1] & 0xC0) == 0x80) {
         code = ((*s & 0x1F) << 6) | (s[1] & 0x3F);
         *src += 2;
-        return code;
+        return code >= 0x80 ? code : '?';
     }
-    if ((*s & 0xF0) == 0xE0 && s[1] && s[2]) {
+    if ((*s & 0xF0) == 0xE0 && (s[1] & 0xC0) == 0x80 &&
+        (s[2] & 0xC0) == 0x80) {
         code = ((*s & 0x0F) << 12) | ((s[1] & 0x3F) << 6) | (s[2] & 0x3F);
         *src += 3;
-        return code;
+        return code >= 0x800 ? code : '?';
+    }
+    if ((*s & 0xF8) == 0xF0 && (s[1] & 0xC0) == 0x80 &&
+        (s[2] & 0xC0) == 0x80 && (s[3] & 0xC0) == 0x80) {
+        *src += 4;
+        return '?';
     }
     (*src)++;
     return '?';
 }
 
-static void utf8_to_cp1251_fallback(const char *src, char *dst, size_t cap) {
-    const unsigned char *p = (const unsigned char *)src;
-    size_t used = 0;
-    while (*p && used + 1 < cap) {
-        int code = utf8_next(&p);
-        if (code < 0x80) dst[used++] = (char)code;
-        else if (code >= 0x0410 && code <= 0x044F) dst[used++] = (char)(0xC0 + code - 0x0410);
-        else if (code == 0x0401) dst[used++] = (char)0xA8;
-        else if (code == 0x0451) dst[used++] = (char)0xB8;
-        else dst[used++] = '?';
-    }
-    dst[used] = 0;
-}
-
 static void local_to_utf8(const char *src, char *dst, size_t cap) {
-    int wlen, ok;
+    int wlen, i;
     WCHAR *wide;
+    size_t used = 0;
     if (!src || !dst || !cap) return;
     wlen = MultiByteToWideChar(CP_ACP, 0, src, -1, NULL, 0);
     if (wlen > 0) {
         wide = (WCHAR *)malloc(sizeof(WCHAR) * wlen);
         if (wide) {
-            MultiByteToWideChar(CP_ACP, 0, src, -1, wide, wlen);
-            ok = WideCharToMultiByte(CP_UTF8, 0, wide, -1, dst, (int)cap, NULL, NULL);
+            if (MultiByteToWideChar(CP_ACP, 0, src, -1, wide, wlen)) {
+                for (i = 0; i < wlen - 1; i++)
+                    utf8_put((unsigned int)wide[i], dst, cap, &used);
+                dst[used] = 0;
+                free(wide);
+                return;
+            }
             free(wide);
-            if (ok > 0) return;
         }
     }
-    if (GetACP() == 1251) cp1251_to_utf8_fallback(src, dst, cap);
-    else {
-        strncpy(dst, src, cap - 1);
-        dst[cap - 1] = 0;
+    while (*src && used + 1 < cap) {
+        unsigned char c = (unsigned char)*src++;
+        utf8_put(c < 0x80 ? c : '?', dst, cap, &used);
     }
+    dst[used] = 0;
 }
 
 static void utf8_to_local(const char *src, char *dst, size_t cap) {
-    int wlen, ok;
+    const unsigned char *p;
+    size_t wlen = 0, max_chars;
+    int code, ok;
     WCHAR *wide;
     if (!src || !dst || !cap) return;
-    wlen = MultiByteToWideChar(CP_UTF8, 0, src, -1, NULL, 0);
-    if (wlen > 0) {
-        wide = (WCHAR *)malloc(sizeof(WCHAR) * wlen);
-        if (wide) {
-            MultiByteToWideChar(CP_UTF8, 0, src, -1, wide, wlen);
-            ok = WideCharToMultiByte(CP_ACP, 0, wide, -1, dst, (int)cap, NULL, NULL);
-            free(wide);
-            if (ok > 0) return;
-        }
+    max_chars = strlen(src) + 1;
+    wide = (WCHAR *)malloc(sizeof(WCHAR) * max_chars);
+    if (!wide) {
+        dst[0] = 0;
+        return;
     }
-    if (GetACP() == 1251) utf8_to_cp1251_fallback(src, dst, cap);
-    else {
-        strncpy(dst, src, cap - 1);
-        dst[cap - 1] = 0;
+    p = (const unsigned char *)src;
+    while (*p && wlen + 1 < max_chars) {
+        code = utf8_next(&p);
+        wide[wlen++] = (WCHAR)(code > 0 && code <= 0xFFFF ? code : '?');
     }
+    wide[wlen] = 0;
+    ok = WideCharToMultiByte(CP_ACP, 0, wide, -1, dst, (int)cap, "?", NULL);
+    free(wide);
+    if (ok > 0) return;
+    p = (const unsigned char *)src;
+    wlen = 0;
+    while (*p && wlen + 1 < cap) {
+        code = utf8_next(&p);
+        dst[wlen++] = (char)(code > 0 && code < 0x80 ? code : '?');
+    }
+    dst[wlen] = 0;
 }
 
 static void convert_inplace_utf8_to_local(char *text, size_t cap) {
@@ -253,15 +242,21 @@ static int resolve_path(const Config *cfg, const char *relative, char *out) {
     char combined[MAX_PATH * 2];
     char root[MAX_PATH];
     size_t root_len;
-    GetFullPathName(cfg->root, MAX_PATH, root, NULL);
+    DWORD length;
+    length = GetFullPathName(cfg->root, MAX_PATH, root, NULL);
+    if (!length || length >= MAX_PATH) return 0;
+    root_len = strlen(root);
+    while (root_len > 3 && (root[root_len - 1] == '\\' || root[root_len - 1] == '/'))
+        root[--root_len] = 0;
     if (cfg->full_access && ((relative[0] && relative[1] == ':') ||
         (relative[0] == '\\' && relative[1] == '\\')))
-        return GetFullPathName(relative, MAX_PATH, out, NULL) != 0;
+        return (length = GetFullPathName(relative, MAX_PATH, out, NULL)) != 0 &&
+            length < MAX_PATH;
     if (_snprintf(combined, sizeof(combined) - 1, "%s\\%s", root, relative) < 0)
         return 0;
     combined[sizeof(combined) - 1] = 0;
-    if (!GetFullPathName(combined, MAX_PATH, out, NULL)) return 0;
-    root_len = strlen(root);
+    length = GetFullPathName(combined, MAX_PATH, out, NULL);
+    if (!length || length >= MAX_PATH) return 0;
     if (!starts_with_ci(out, root)) return 0;
     return out[root_len] == 0 || out[root_len] == '\\';
 }
@@ -708,7 +703,7 @@ int main(int argc, char **argv) {
     strncpy(cfg.root, argc > 3 ? argv[3] : "C:\\CODEX95\\WORK", sizeof(cfg.root) - 1);
     strcpy(cfg.device_name, "Toshiba Libretto 70CT");
     if (!GetEnvironmentVariable("CODEX95_MODEL", cfg.model, sizeof(cfg.model)))
-        strcpy(cfg.model, "gpt-5.4-mini");
+        strcpy(cfg.model, DEFAULT_MODEL);
     cfg.auto_yes = (argc > 4 && !strcmp(argv[4], "-y")) || (argc > 5 && !strcmp(argv[5], "-y"));
     cfg.full_access = (argc > 4 && !strcmp(argv[4], "-full")) || (argc > 5 && !strcmp(argv[5], "-full"));
     if (WSAStartup(MAKEWORD(1, 1), &wsa)) {

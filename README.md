@@ -4,7 +4,9 @@
 Windows, macOS, or Linux bridge computer.**
 
 [Русская инструкция](README_RU.md) · [Security](SECURITY.md) ·
-[Update design](UPDATES.md) · [Codex95 Link](CODEX95_LINK.md)
+[Updates](UPDATES.md) · [Changelog](CHANGELOG.md) · [Codex95 Link](CODEX95_LINK.md)
+
+Current development release: **v0.4.0**.
 
 > [!WARNING]
 > Codex95 is experimental software. It can execute commands and modify or
@@ -102,7 +104,7 @@ genuinely need it.
 - select the OpenAI model from the client;
 - use a lightweight dark interface;
 - change the client text size for small retro screens;
-- update the Windows 95 GUI client from the bridge over Ethernet;
+- detect and install Windows 95 client updates from the bridge over Ethernet;
 - optionally allow full access to the Windows 95 computer.
 
 ## What It Does Not Do
@@ -112,7 +114,8 @@ genuinely need it.
   computer.
 - It is not a sandbox. Automatic actions can modify real files.
 - It is not ready to be exposed directly to the internet.
-- Bridge self-updates and signed release manifests are not implemented yet.
+- Bridge self-updates and cryptographically signed release manifests are not
+  implemented yet.
 
 ## Bridge Launch Options
 
@@ -154,26 +157,53 @@ Open **Options > Settings** in `CODEX95W.EXE`:
 | Full computer access | Allows absolute paths and work outside the selected project |
 | Dark interface | Enables the lightweight dark theme |
 | Text size | Scales the main client UI text |
+| Check for updates at startup | Shows a prompt when the bridge has a newer client |
 
 Visible chat logs are stored in the `CHATS` folder beside `CODEX95W.EXE`.
 Bridge-side conversation state is stored locally in the ignored
 `bridge/.codex95-state.json` file. Neither history file contains the API key.
 
+## Choosing A Model
+
+Codex95 v0.4.0 includes the current OpenAI model family. The model list remains
+editable, so another API model ID can be typed manually.
+
+| Model | Use it for |
+| --- | --- |
+| `gpt-5.6-luna` | Lowest-cost default for small programs and routine edits |
+| `gpt-5.6-terra` | Better balance of coding ability and API cost |
+| `gpt-5.6` / `gpt-5.6-sol` | Complex professional work; both IDs route to Sol |
+| `gpt-6-astra` | The hardest coding and multi-step tasks; highest token price |
+| `chat-latest` | The changing ChatGPT Instant model rather than a fixed snapshot |
+
+Legacy GPT-5.5 and GPT-5.4 choices remain available for existing projects.
+Changing a project's model gives that project a separate visible chat and
+bridge-side model context. Existing `CODEX95.INI` files keep their selected
+model; `gpt-5.6-luna` is the default only for new installations.
+Model access can vary by API account and rollout; an unavailable choice returns
+the API error in the chat without changing project files.
+
+See the official [OpenAI model list](https://developers.openai.com/api/docs/models)
+for availability and current pricing.
+
 ## Updating The Windows 95 Client
 
-The bridge can serve the current prebuilt client from `build\CODEX95W.EXE`.
-This is meant for trusted local Ethernet use while developing and testing.
+The bridge serves a version manifest and the current prebuilt client from
+`build\CODEX95W.EXE`. This is meant for trusted local Ethernet use while
+developing and testing.
 
 1. Rebuild or update `build\CODEX95W.EXE` on the modern bridge computer.
 2. Start the bridge normally and keep it open.
 3. On the Windows 95 computer, open `CODEX95W.EXE`.
-4. Choose **Options > Update Codex95...**.
-5. Confirm the prompt. The client downloads `CODEX95W.NEW`, starts
-   `APPLYUPD.BAT`, closes, replaces `CODEX95W.EXE`, and starts again.
+4. Accept the startup update prompt, or choose **Options > Update Codex95...**.
+5. Confirm the version. The client validates the advertised size and DOS `MZ`
+   header, downloads `CODEX95W.NEW`, and starts `APPLYUPD.BAT`.
+6. The updater keeps `CODEX95W.OLD`, replaces the executable, and restarts it.
 
 The updater preserves `CODEX95.INI`, chats, projects, and bridge state. It only
-replaces the GUI executable. If the old client cannot reach the bridge, copy the
-new `build\CODEX95W.EXE` manually as a recovery path.
+replaces the GUI executable and has bounded retries plus rollback on copy
+failure. If the old client cannot reach the bridge, copy the new
+`build\CODEX95W.EXE` manually as a recovery path.
 
 ## Network And Security
 
@@ -247,8 +277,9 @@ Project layout:
 - **Client fails because of MSVCRT:** use a Visual C++ 6 `/MT` build.
 - **Build command fails:** install a Windows 95-compatible compiler on the
   target computer.
-- **Japanese Windows 95 text problems:** prefer ASCII filenames and deliberately
-  handle the target codepage for non-ASCII files.
+- **Japanese Windows 95 text problems:** v0.4.0 uses the system GUI font and
+  CP932 conversion on a Japanese installation. Prefer ASCII filenames when
+  exchanging projects with a differently localized computer.
 - **Russian or Japanese chat text looks broken:** Codex95 converts bridge UTF-8
   messages to the Windows 95 system ANSI codepage before showing them. Japanese
   text needs a Japanese/CP932 system or matching fonts. Russian text needs a
@@ -260,7 +291,8 @@ Project layout:
 - Text files and action results are limited to roughly 30 KB per operation.
 - `run_command` executes through `COMMAND.COM`.
 - Commands are not sandboxed on Windows 95.
-- Service messages use plain ASCII for compatibility with Windows 95.
+- Built-in interface labels and service messages use plain ASCII for broad
+  Windows 95 compatibility.
 - Chat prompts, replies, and command results are converted between UTF-8 and
   the local Windows ANSI codepage when the operating system supports it.
 

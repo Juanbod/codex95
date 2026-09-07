@@ -15,16 +15,15 @@
 #include <ctype.h>
 #include <process.h>
 
-#define APP_TITLE "Codex95"
+#define APP_NAME "Codex95"
+#define APP_VERSION "0.4.0"
+#define APP_TITLE APP_NAME " " APP_VERSION
+#define DEFAULT_MODEL "gpt-5.6-luna"
 #define BUF_SIZE 4096
 #define BIG_SIZE 49152
 #define RESULT_SIZE 32000
 #define TRANSCRIPT_LIMIT 28000
 #define TRANSCRIPT_TRIM 8000
-
-#ifndef CP_UTF8
-#define CP_UTF8 65001
-#endif
 
 #define IDC_TRANSCRIPT 101
 #define IDC_PROMPT 102
@@ -50,6 +49,7 @@
 #define IDC_SET_DARK 307
 #define IDC_SET_MODEL 308
 #define IDC_SET_SCALE 309
+#define IDC_SET_UPDATES 310
 #define IDC_NAME_EDIT 401
 #define IDC_NAME_OK 402
 #define IDC_NAME_CANCEL 403
@@ -58,6 +58,7 @@
 #define WM_TASK_DONE (WM_USER + 2)
 #define WM_SET_STATUS (WM_USER + 3)
 #define WM_RUN_SMOKE (WM_USER + 4)
+#define WM_UPDATE_AVAILABLE (WM_USER + 5)
 
 typedef struct {
     char host[128];
@@ -69,6 +70,7 @@ typedef struct {
     int full_access;
     int dark_mode;
     int text_scale;
+    int check_updates;
 } Config;
 
 typedef struct {
@@ -97,19 +99,34 @@ static volatile int g_busy = 0;
 static int g_smoke = 0;
 static char g_name_value[MAX_PATH];
 static int g_name_done;
+static char g_pending_update[32];
 
 static void controls_to_config(Config *cfg);
 static void ensure_directory_tree(const char *path);
 
 static HFONT make_ui_font(int scale) {
+    LOGFONT lf;
+    HFONT stock;
     int height = scale <= 0 ? 13 : (scale == 1 ? 15 : (scale == 2 ? 17 : (scale == 3 ? 20 : 23)));
+    stock = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+    memset(&lf, 0, sizeof(lf));
+    if (stock && GetObject(stock, sizeof(lf), &lf)) {
+        lf.lfHeight = -height;
+        lf.lfWidth = 0;
+        return CreateFontIndirect(&lf);
+    }
     return CreateFont(-height, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        DEFAULT_QUALITY, FF_DONTCARE, "MS Sans Serif");
+        DEFAULT_QUALITY, FF_DONTCARE, "");
 }
 
 static void set_font_if(HWND hwnd, HFONT font) {
     if (hwnd && font) SendMessage(hwnd, WM_SETFONT, (WPARAM)font, TRUE);
+}
+
+static BOOL CALLBACK set_child_font(HWND hwnd, LPARAM font) {
+    set_font_if(hwnd, (HFONT)font);
+    return TRUE;
 }
 
 static const char b64_table[] =
@@ -203,20 +220,6 @@ static void utf8_put(unsigned int code, char *dst, size_t cap, size_t *used) {
     }
 }
 
-static void cp1251_to_utf8_fallback(const char *src, char *dst, size_t cap) {
-    size_t used = 0;
-    while (*src && used + 1 < cap) {
-        unsigned char c = (unsigned char)*src++;
-        unsigned int code = c;
-        if (c >= 0xC0) code = 0x0410 + (c - 0xC0);
-        else if (c == 0xA8) code = 0x0401;
-        else if (c == 0xB8) code = 0x0451;
-        else if (c >= 0x80) code = '?';
-        utf8_put(code, dst, cap, &used);
-    }
-    dst[used] = 0;
-}
-
 static int utf8_next(const unsigned char **src) {
     const unsigned char *s = *src;
     int code;
@@ -225,74 +228,80 @@ static int utf8_next(const unsigned char **src) {
         (*src)++;
         return *s;
     }
-    if ((*s & 0xE0) == 0xC0 && s[1]) {
+    if ((*s & 0xE0) == 0xC0 && (s[1] & 0xC0) == 0x80) {
         code = ((*s & 0x1F) << 6) | (s[1] & 0x3F);
         *src += 2;
-        return code;
+        return code >= 0x80 ? code : '?';
     }
-    if ((*s & 0xF0) == 0xE0 && s[1] && s[2]) {
+    if ((*s & 0xF0) == 0xE0 && (s[1] & 0xC0) == 0x80 &&
+        (s[2] & 0xC0) == 0x80) {
         code = ((*s & 0x0F) << 12) | ((s[1] & 0x3F) << 6) | (s[2] & 0x3F);
         *src += 3;
-        return code;
+        return code >= 0x800 ? code : '?';
+    }
+    if ((*s & 0xF8) == 0xF0 && (s[1] & 0xC0) == 0x80 &&
+        (s[2] & 0xC0) == 0x80 && (s[3] & 0xC0) == 0x80) {
+        *src += 4;
+        return '?';
     }
     (*src)++;
     return '?';
 }
 
-static void utf8_to_cp1251_fallback(const char *src, char *dst, size_t cap) {
-    const unsigned char *p = (const unsigned char *)src;
-    size_t used = 0;
-    while (*p && used + 1 < cap) {
-        int code = utf8_next(&p);
-        if (code < 0x80) dst[used++] = (char)code;
-        else if (code >= 0x0410 && code <= 0x044F) dst[used++] = (char)(0xC0 + code - 0x0410);
-        else if (code == 0x0401) dst[used++] = (char)0xA8;
-        else if (code == 0x0451) dst[used++] = (char)0xB8;
-        else dst[used++] = '?';
-    }
-    dst[used] = 0;
-}
-
 static void local_to_utf8(const char *src, char *dst, size_t cap) {
-    int wlen, ok;
+    int wlen, i;
     WCHAR *wide;
+    size_t used = 0;
     if (!src || !dst || !cap) return;
     wlen = MultiByteToWideChar(CP_ACP, 0, src, -1, NULL, 0);
     if (wlen > 0) {
         wide = (WCHAR *)malloc(sizeof(WCHAR) * wlen);
         if (wide) {
-            MultiByteToWideChar(CP_ACP, 0, src, -1, wide, wlen);
-            ok = WideCharToMultiByte(CP_UTF8, 0, wide, -1, dst, (int)cap, NULL, NULL);
+            if (MultiByteToWideChar(CP_ACP, 0, src, -1, wide, wlen)) {
+                for (i = 0; i < wlen - 1; i++)
+                    utf8_put((unsigned int)wide[i], dst, cap, &used);
+                dst[used] = 0;
+                free(wide);
+                return;
+            }
             free(wide);
-            if (ok > 0) return;
         }
     }
-    if (GetACP() == 1251) cp1251_to_utf8_fallback(src, dst, cap);
-    else {
-        strncpy(dst, src, cap - 1);
-        dst[cap - 1] = 0;
+    while (*src && used + 1 < cap) {
+        unsigned char c = (unsigned char)*src++;
+        utf8_put(c < 0x80 ? c : '?', dst, cap, &used);
     }
+    dst[used] = 0;
 }
 
 static void utf8_to_local(const char *src, char *dst, size_t cap) {
-    int wlen, ok;
+    const unsigned char *p;
+    size_t wlen = 0, max_chars;
+    int code, ok;
     WCHAR *wide;
     if (!src || !dst || !cap) return;
-    wlen = MultiByteToWideChar(CP_UTF8, 0, src, -1, NULL, 0);
-    if (wlen > 0) {
-        wide = (WCHAR *)malloc(sizeof(WCHAR) * wlen);
-        if (wide) {
-            MultiByteToWideChar(CP_UTF8, 0, src, -1, wide, wlen);
-            ok = WideCharToMultiByte(CP_ACP, 0, wide, -1, dst, (int)cap, NULL, NULL);
-            free(wide);
-            if (ok > 0) return;
-        }
+    max_chars = strlen(src) + 1;
+    wide = (WCHAR *)malloc(sizeof(WCHAR) * max_chars);
+    if (!wide) {
+        dst[0] = 0;
+        return;
     }
-    if (GetACP() == 1251) utf8_to_cp1251_fallback(src, dst, cap);
-    else {
-        strncpy(dst, src, cap - 1);
-        dst[cap - 1] = 0;
+    p = (const unsigned char *)src;
+    while (*p && wlen + 1 < max_chars) {
+        code = utf8_next(&p);
+        wide[wlen++] = (WCHAR)(code > 0 && code <= 0xFFFF ? code : '?');
     }
+    wide[wlen] = 0;
+    ok = WideCharToMultiByte(CP_ACP, 0, wide, -1, dst, (int)cap, "?", NULL);
+    free(wide);
+    if (ok > 0) return;
+    p = (const unsigned char *)src;
+    wlen = 0;
+    while (*p && wlen + 1 < cap) {
+        code = utf8_next(&p);
+        dst[wlen++] = (char)(code > 0 && code < 0x80 ? code : '?');
+    }
+    dst[wlen] = 0;
 }
 
 static void convert_inplace_utf8_to_local(char *text, size_t cap) {
@@ -351,18 +360,42 @@ static HBRUSH control_color(HDC dc, int edit) {
     return edit ? g_dark_edit_brush : g_dark_brush;
 }
 
+static int draw_button(const DRAWITEMSTRUCT *item) {
+    RECT rc;
+    char label[128];
+    HBRUSH brush;
+    HFONT old_font = NULL;
+    COLORREF text_color;
+    if (!item || item->CtlType != ODT_BUTTON) return 0;
+    rc = item->rcItem;
+    brush = g_dark_mode
+        ? ((item->itemState & ODS_SELECTED) ? g_dark_edit_brush : g_dark_brush)
+        : (HBRUSH)(COLOR_BTNFACE + 1);
+    FillRect(item->hDC, &rc, brush);
+    DrawEdge(item->hDC, &rc,
+        (item->itemState & ODS_SELECTED) ? EDGE_SUNKEN : EDGE_RAISED, BF_RECT);
+    GetWindowText(item->hwndItem, label, sizeof(label));
+    SetBkMode(item->hDC, TRANSPARENT);
+    if (item->itemState & ODS_DISABLED) text_color = GetSysColor(COLOR_GRAYTEXT);
+    else text_color = g_dark_mode ? RGB(240, 240, 240) : GetSysColor(COLOR_BTNTEXT);
+    SetTextColor(item->hDC, text_color);
+    if (g_ui_font) old_font = (HFONT)SelectObject(item->hDC, g_ui_font);
+    if (item->itemState & ODS_SELECTED) OffsetRect(&rc, 1, 1);
+    DrawText(item->hDC, label, -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    if (old_font) SelectObject(item->hDC, old_font);
+    if (item->itemState & ODS_FOCUS) {
+        InflateRect(&rc, -4, -4);
+        DrawFocusRect(item->hDC, &rc);
+    }
+    return 1;
+}
+
 static void apply_theme(void) {
     HWND settings = FindWindow("Codex95Settings", NULL);
     HFONT old = g_ui_font;
     g_ui_font = make_ui_font(g_text_scale);
-    set_font_if(g_transcript, g_ui_font);
-    set_font_if(g_prompt, g_ui_font);
-    set_font_if(g_project, g_ui_font);
-    set_font_if(g_host, g_ui_font);
-    set_font_if(g_send, g_ui_font);
-    set_font_if(g_auto, g_ui_font);
-    set_font_if(g_status, g_ui_font);
-    set_font_if(g_projects, g_ui_font);
+    EnumChildWindows(g_main, set_child_font, (LPARAM)g_ui_font);
+    if (settings) EnumChildWindows(settings, set_child_font, (LPARAM)g_ui_font);
     if (old) DeleteObject(old);
     InvalidateRect(g_main, NULL, TRUE);
     if (settings) InvalidateRect(settings, NULL, TRUE);
@@ -382,15 +415,21 @@ static int resolve_path(const Config *cfg, const char *relative, char *out) {
     char combined[MAX_PATH * 2];
     char root[MAX_PATH];
     size_t root_len;
-    if (!GetFullPathName(cfg->root, MAX_PATH, root, NULL)) return 0;
+    DWORD length;
+    length = GetFullPathName(cfg->root, MAX_PATH, root, NULL);
+    if (!length || length >= MAX_PATH) return 0;
+    root_len = strlen(root);
+    while (root_len > 3 && (root[root_len - 1] == '\\' || root[root_len - 1] == '/'))
+        root[--root_len] = 0;
     if (cfg->full_access && ((relative[0] && relative[1] == ':') ||
         (relative[0] == '\\' && relative[1] == '\\')))
-        return GetFullPathName(relative, MAX_PATH, out, NULL) != 0;
+        return (length = GetFullPathName(relative, MAX_PATH, out, NULL)) != 0 &&
+            length < MAX_PATH;
     if (_snprintf(combined, sizeof(combined) - 1, "%s\\%s", root, relative) < 0)
         return 0;
     combined[sizeof(combined) - 1] = 0;
-    if (!GetFullPathName(combined, MAX_PATH, out, NULL)) return 0;
-    root_len = strlen(root);
+    length = GetFullPathName(combined, MAX_PATH, out, NULL);
+    if (!length || length >= MAX_PATH) return 0;
     if (!starts_with_ci(out, root)) return 0;
     return out[root_len] == 0 || out[root_len] == '\\';
 }
@@ -488,14 +527,16 @@ static int http_post(const Config *cfg, const char *path, const char *body,
     return 1;
 }
 
-static int http_get_file(const Config *cfg, const char *path, const char *file_path) {
+static int http_get_file(const Config *cfg, const char *path, const char *file_path,
+                         DWORD expected_size) {
     struct hostent *he;
     struct sockaddr_in addr;
     SOCKET sock;
     HANDLE out;
-    char header[512], raw[2048], *payload;
-    int got, header_done = 0, ok = 0;
+    char header[512], raw[2048], headers[4096], *payload;
+    int got, header_done = 0, ok = 0, header_used = 0, body_bytes;
     DWORD written;
+    DWORD total_written = 0;
     unsigned long numeric_addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
@@ -516,26 +557,56 @@ static int http_get_file(const Config *cfg, const char *path, const char *file_p
     sprintf(header, "GET %s HTTP/1.0\r\nHost: %s\r\nConnection: close\r\n\r\n", path, cfg->host);
     if (!send_all(sock, header, (int)strlen(header))) { closesocket(sock); return 0; }
     out = INVALID_HANDLE_VALUE;
-    while ((got = recv(sock, raw, sizeof(raw) - 1, 0)) > 0) {
-        raw[got] = 0;
+    while ((got = recv(sock, raw, sizeof(raw), 0)) > 0) {
         if (!header_done) {
-            payload = strstr(raw, "\r\n\r\n");
+            if (header_used + got >= (int)sizeof(headers)) break;
+            memcpy(headers + header_used, raw, got);
+            header_used += got;
+            headers[header_used] = 0;
+            payload = strstr(headers, "\r\n\r\n");
             if (!payload) continue;
-            ok = !strncmp(raw, "HTTP/1.0 200", 12) || !strncmp(raw, "HTTP/1.1 200", 12);
+            ok = !strncmp(headers, "HTTP/1.0 200", 12) ||
+                 !strncmp(headers, "HTTP/1.1 200", 12);
             if (!ok) break;
             out = CreateFile(file_path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
             if (out == INVALID_HANDLE_VALUE) break;
             header_done = 1;
             payload += 4;
-            WriteFile(out, payload, got - (int)(payload - raw), &written, NULL);
+            body_bytes = header_used - (int)(payload - headers);
+            if (body_bytes > 0) {
+                if (!WriteFile(out, payload, body_bytes, &written, NULL) ||
+                    written != (DWORD)body_bytes) { ok = 0; break; }
+                total_written += written;
+            }
         } else {
-            WriteFile(out, raw, got, &written, NULL);
+            if (!WriteFile(out, raw, got, &written, NULL) || written != (DWORD)got) {
+                ok = 0;
+                break;
+            }
+            total_written += written;
         }
     }
     if (out != INVALID_HANDLE_VALUE) CloseHandle(out);
     closesocket(sock);
+    if (expected_size && total_written != expected_size) ok = 0;
     if (!header_done || !ok) DeleteFile(file_path);
     return header_done && ok;
+}
+
+static int valid_executable(const char *path, DWORD expected_size) {
+    HANDLE file;
+    DWORD size, read;
+    unsigned char magic[2];
+    file = CreateFile(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) return 0;
+    size = GetFileSize(file, NULL);
+    read = 0;
+    ReadFile(file, magic, sizeof(magic), &read, NULL);
+    CloseHandle(file);
+    return size != 0xFFFFFFFFUL && size >= 16384 &&
+        (!expected_size || size == expected_size) && read == 2 &&
+        magic[0] == 'M' && magic[1] == 'Z';
 }
 
 static void append_connect_error(const Config *cfg) {
@@ -1059,6 +1130,7 @@ static void load_config(Config *cfg) {
     cfg->full_access = GetPrivateProfileInt("Codex95", "FullAccess", 0, g_ini);
     cfg->dark_mode = GetPrivateProfileInt("Codex95", "DarkMode", 0, g_ini);
     cfg->text_scale = GetPrivateProfileInt("Codex95", "TextScale", 1, g_ini);
+    cfg->check_updates = GetPrivateProfileInt("Codex95", "CheckUpdates", 1, g_ini);
     if (cfg->text_scale < 0) cfg->text_scale = 0;
     if (cfg->text_scale > 4) cfg->text_scale = 4;
     GetPrivateProfileString("Codex95", "Host", "auto",
@@ -1067,7 +1139,7 @@ static void load_config(Config *cfg) {
         cfg->root, sizeof(cfg->root), g_ini);
     GetPrivateProfileString("Codex95", "DeviceName", "Toshiba Libretto 70CT",
         cfg->device_name, sizeof(cfg->device_name), g_ini);
-    GetPrivateProfileString("Codex95", "Model", "gpt-5.4-mini",
+    GetPrivateProfileString("Codex95", "Model", DEFAULT_MODEL,
         cfg->model, sizeof(cfg->model), g_ini);
 }
 
@@ -1082,6 +1154,7 @@ static void save_config(const Config *cfg) {
     WritePrivateProfileString("Codex95", "Automatic", cfg->automatic ? "1" : "0", g_ini);
     WritePrivateProfileString("Codex95", "FullAccess", cfg->full_access ? "1" : "0", g_ini);
     WritePrivateProfileString("Codex95", "DarkMode", cfg->dark_mode ? "1" : "0", g_ini);
+    WritePrivateProfileString("Codex95", "CheckUpdates", cfg->check_updates ? "1" : "0", g_ini);
     sprintf(number, "%d", cfg->text_scale);
     WritePrivateProfileString("Codex95", "TextScale", number, g_ini);
     WritePrivateProfileString(NULL, NULL, NULL, g_ini);
@@ -1091,7 +1164,7 @@ static void controls_to_config(Config *cfg) {
     char host_port[160], *colon;
     GetPrivateProfileString("Codex95", "DeviceName", "Toshiba Libretto 70CT",
         cfg->device_name, sizeof(cfg->device_name), g_ini);
-    GetPrivateProfileString("Codex95", "Model", "gpt-5.4-mini",
+    GetPrivateProfileString("Codex95", "Model", DEFAULT_MODEL,
         cfg->model, sizeof(cfg->model), g_ini);
     GetWindowText(g_project, cfg->root, sizeof(cfg->root));
     GetWindowText(g_host, host_port, sizeof(host_port));
@@ -1107,6 +1180,7 @@ static void controls_to_config(Config *cfg) {
     cfg->full_access = GetPrivateProfileInt("Codex95", "FullAccess", 0, g_ini);
     cfg->dark_mode = GetPrivateProfileInt("Codex95", "DarkMode", 0, g_ini);
     cfg->text_scale = GetPrivateProfileInt("Codex95", "TextScale", 1, g_ini);
+    cfg->check_updates = GetPrivateProfileInt("Codex95", "CheckUpdates", 1, g_ini);
     if (cfg->text_scale < 0) cfg->text_scale = 0;
     if (cfg->text_scale > 4) cfg->text_scale = 4;
 }
@@ -1146,13 +1220,14 @@ static void parent_directory(const char *path, char *parent, size_t cap) {
 static const char *base_name(const char *path) {
     const char *a = strrchr(path, '\\');
     const char *b = strrchr(path, '/');
-    const char *last = a > b ? a : b;
+    const char *last = a;
+    if (!last || (b && b > last)) last = b;
     return last ? last + 1 : path;
 }
 
 static void set_project_status(const char *path) {
     char text[MAX_PATH + 128], model[80];
-    GetPrivateProfileString("Codex95", "Model", "gpt-5.4-mini",
+    GetPrivateProfileString("Codex95", "Model", DEFAULT_MODEL,
         model, sizeof(model), g_ini);
     if (GetPrivateProfileInt("Codex95", "FullAccess", 0, g_ini)) {
         _snprintf(text, sizeof(text) - 1, "%s  [%s]  [FULL ACCESS]", base_name(path), model);
@@ -1217,13 +1292,13 @@ static int valid_project_name(const char *name) {
 static LRESULT CALLBACK name_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_CREATE: {
-        HFONT font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+        HFONT font = g_ui_font ? g_ui_font : (HFONT)GetStockObject(DEFAULT_GUI_FONT);
         HWND edit = CreateWindowEx(WS_EX_CLIENTEDGE, "EDIT", g_name_value,
             WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 12, 14, 300, 22,
             hwnd, (HMENU)IDC_NAME_EDIT, NULL, NULL);
-        HWND ok = CreateWindow("BUTTON", "OK", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
+        HWND ok = CreateWindow("BUTTON", "OK", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
             152, 48, 76, 24, hwnd, (HMENU)IDC_NAME_OK, NULL, NULL);
-        HWND cancel = CreateWindow("BUTTON", "Cancel", WS_CHILD | WS_VISIBLE,
+        HWND cancel = CreateWindow("BUTTON", "Cancel", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
             236, 48, 76, 24, hwnd, (HMENU)IDC_NAME_CANCEL, NULL, NULL);
         SendMessage(edit, WM_SETFONT, (WPARAM)font, TRUE);
         SendMessage(ok, WM_SETFONT, (WPARAM)font, TRUE);
@@ -1231,6 +1306,7 @@ static LRESULT CALLBACK name_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         SendMessage(edit, EM_LIMITTEXT, 120, 0);
         SetFocus(edit);
         SendMessage(edit, EM_SETSEL, 0, -1);
+        SendMessage(hwnd, DM_SETDEFID, IDC_NAME_OK, 0);
         return 0;
     }
     case WM_COMMAND:
@@ -1245,6 +1321,23 @@ static LRESULT CALLBACK name_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             DestroyWindow(hwnd);
         } else if (LOWORD(wp) == IDC_NAME_CANCEL) DestroyWindow(hwnd);
         return 0;
+    case WM_DRAWITEM:
+        if (draw_button((DRAWITEMSTRUCT *)lp)) return TRUE;
+        break;
+    case WM_ERASEBKGND:
+        if (g_dark_mode) {
+            RECT rc;
+            GetClientRect(hwnd, &rc);
+            FillRect((HDC)wp, &rc, g_dark_brush);
+            return 1;
+        }
+        break;
+    case WM_CTLCOLOREDIT:
+        {
+            HBRUSH brush = control_color((HDC)wp, 1);
+            if (brush) return (LRESULT)brush;
+        }
+        break;
     case WM_CLOSE:
         DestroyWindow(hwnd);
         return 0;
@@ -1490,10 +1583,17 @@ static LRESULT CALLBACK settings_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             WS_CHILD | WS_VISIBLE | WS_VSCROLL | CBS_DROPDOWN,
             120, 76, 230, 120, hwnd, (HMENU)IDC_SET_MODEL, NULL, NULL);
         SendMessage(child, WM_SETFONT, (WPARAM)font, TRUE);
+        SendMessage(child, CB_ADDSTRING, 0, (LPARAM)"gpt-5.6-luna");
+        SendMessage(child, CB_ADDSTRING, 0, (LPARAM)"gpt-5.6-terra");
+        SendMessage(child, CB_ADDSTRING, 0, (LPARAM)"gpt-5.6");
+        SendMessage(child, CB_ADDSTRING, 0, (LPARAM)"gpt-5.6-sol");
+        SendMessage(child, CB_ADDSTRING, 0, (LPARAM)"gpt-6-astra");
+        SendMessage(child, CB_ADDSTRING, 0, (LPARAM)"chat-latest");
         SendMessage(child, CB_ADDSTRING, 0, (LPARAM)"gpt-5.5");
-        SendMessage(child, CB_ADDSTRING, 0, (LPARAM)"gpt-5.4-nano");
+        SendMessage(child, CB_ADDSTRING, 0, (LPARAM)"gpt-5.5-pro");
         SendMessage(child, CB_ADDSTRING, 0, (LPARAM)"gpt-5.4-mini");
         SendMessage(child, CB_ADDSTRING, 0, (LPARAM)"gpt-5.4");
+        SendMessage(child, CB_ADDSTRING, 0, (LPARAM)"gpt-5.4-nano");
         SetWindowText(child, g_settings_cfg.model);
         child = CreateWindow("BUTTON", "Run actions automatically",
             WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 12, 112, 250, 20,
@@ -1510,24 +1610,30 @@ static LRESULT CALLBACK settings_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             hwnd, (HMENU)IDC_SET_DARK, NULL, NULL);
         SendMessage(child, WM_SETFONT, (WPARAM)font, TRUE);
         SendMessage(child, BM_SETCHECK, g_settings_cfg.dark_mode ? BST_CHECKED : BST_UNCHECKED, 0);
-        CreateWindow("STATIC", "Text size:", WS_CHILD | WS_VISIBLE, 12, 192, 105, 18,
+        child = CreateWindow("BUTTON", "Check for updates at startup",
+            WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 12, 190, 250, 20,
+            hwnd, (HMENU)IDC_SET_UPDATES, NULL, NULL);
+        SendMessage(child, BM_SETCHECK, g_settings_cfg.check_updates ? BST_CHECKED : BST_UNCHECKED, 0);
+        CreateWindow("STATIC", "Text size:", WS_CHILD | WS_VISIBLE, 12, 218, 105, 18,
             hwnd, NULL, NULL, NULL);
         child = CreateWindow("SCROLLBAR", "",
-            WS_CHILD | WS_VISIBLE | SBS_HORZ, 120, 190, 230, 18,
+            WS_CHILD | WS_VISIBLE | SBS_HORZ, 120, 216, 230, 18,
             hwnd, (HMENU)IDC_SET_SCALE, NULL, NULL);
         SendMessage(child, SBM_SETRANGE, 0, 4);
         SendMessage(child, SBM_SETPOS, g_settings_cfg.text_scale, TRUE);
         child = CreateWindow("STATIC",
             "Full access allows Codex to use absolute paths, run commands anywhere,\r\n"
             "and modify or delete files outside the selected project.",
-            WS_CHILD | WS_VISIBLE, 30, 216, 320, 42, hwnd, NULL, NULL, NULL);
+            WS_CHILD | WS_VISIBLE, 30, 242, 320, 42, hwnd, NULL, NULL, NULL);
         SendMessage(child, WM_SETFONT, (WPARAM)font, TRUE);
-        child = CreateWindow("BUTTON", "OK", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
-            190, 268, 76, 24, hwnd, (HMENU)IDC_SET_OK, NULL, NULL);
+        child = CreateWindow("BUTTON", "OK", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+            190, 294, 76, 24, hwnd, (HMENU)IDC_SET_OK, NULL, NULL);
         SendMessage(child, WM_SETFONT, (WPARAM)font, TRUE);
-        child = CreateWindow("BUTTON", "Cancel", WS_CHILD | WS_VISIBLE,
-            274, 268, 76, 24, hwnd, (HMENU)IDC_SET_CANCEL, NULL, NULL);
+        child = CreateWindow("BUTTON", "Cancel", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+            274, 294, 76, 24, hwnd, (HMENU)IDC_SET_CANCEL, NULL, NULL);
         SendMessage(child, WM_SETFONT, (WPARAM)font, TRUE);
+        EnumChildWindows(hwnd, set_child_font, (LPARAM)font);
+        SendMessage(hwnd, DM_SETDEFID, IDC_SET_OK, 0);
         return 0;
     }
     case WM_HSCROLL:
@@ -1566,12 +1672,14 @@ static LRESULT CALLBACK settings_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 sizeof(g_settings_cfg.device_name));
             GetWindowText(GetDlgItem(hwnd, IDC_SET_MODEL), g_settings_cfg.model,
                 sizeof(g_settings_cfg.model));
-            if (!g_settings_cfg.model[0]) strcpy(g_settings_cfg.model, "gpt-5.4-mini");
+            if (!g_settings_cfg.model[0]) strcpy(g_settings_cfg.model, DEFAULT_MODEL);
             g_settings_cfg.automatic =
                 SendMessage(GetDlgItem(hwnd, IDC_SET_AUTO), BM_GETCHECK, 0, 0) == BST_CHECKED;
             g_settings_cfg.full_access = full;
             g_settings_cfg.dark_mode =
                 SendMessage(GetDlgItem(hwnd, IDC_SET_DARK), BM_GETCHECK, 0, 0) == BST_CHECKED;
+            g_settings_cfg.check_updates =
+                SendMessage(GetDlgItem(hwnd, IDC_SET_UPDATES), BM_GETCHECK, 0, 0) == BST_CHECKED;
             g_settings_cfg.text_scale = GetScrollPos(GetDlgItem(hwnd, IDC_SET_SCALE), SB_CTL);
             g_dark_mode = g_settings_cfg.dark_mode;
             g_text_scale = g_settings_cfg.text_scale;
@@ -1587,6 +1695,9 @@ static LRESULT CALLBACK settings_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             DestroyWindow(hwnd);
         }
         return 0;
+    case WM_DRAWITEM:
+        if (draw_button((DRAWITEMSTRUCT *)lp)) return TRUE;
+        break;
     case WM_CLOSE:
         DestroyWindow(hwnd);
         return 0;
@@ -1620,7 +1731,7 @@ static void show_settings(void) {
     GetWindowRect(g_main, &main_rc);
     window = CreateWindowEx(WS_EX_DLGMODALFRAME, "Codex95Settings", "Codex95 Settings",
         WS_POPUP | WS_CAPTION | WS_SYSMENU,
-        main_rc.left + 80, main_rc.top + 60, 380, 336,
+        main_rc.left + 80, main_rc.top + 45, 380, 364,
         g_main, NULL, NULL, NULL);
     if (!window) return;
     EnableWindow(g_main, FALSE);
@@ -1637,33 +1748,137 @@ static void show_settings(void) {
         load_chat(g_settings_cfg.root);
         set_project_status(g_settings_cfg.root);
     }
+    if (g_pending_update[0]) {
+        post_alloc(WM_UPDATE_AVAILABLE, g_pending_update);
+        g_pending_update[0] = 0;
+    }
 }
 
 static int write_update_batch(const char *batch_path) {
     HANDLE file;
     DWORD written;
-    const char *text =
-        "@echo off\r\n"
-        "echo Updating Codex95...\r\n"
-        ":again\r\n"
-        "del CODEX95W.EXE >NUL\r\n"
-        "if exist CODEX95W.EXE goto again\r\n"
-        "copy CODEX95W.NEW CODEX95W.EXE >NUL\r\n"
-        "if not exist CODEX95W.EXE goto again\r\n"
-        "del CODEX95W.NEW >NUL\r\n"
-        "CODEX95W.EXE\r\n";
+    int i;
+    const char *lines[] = {
+        "@echo off\r\n",
+        "echo Updating Codex95...\r\n",
+        "if exist CODEX95W.OLD del CODEX95W.OLD >NUL\r\n",
+        "if exist CODEX95W.OLD goto backup_failed\r\n",
+        "copy CODEX95W.EXE CODEX95W.OLD >NUL\r\n",
+        "if not exist CODEX95W.OLD goto backup_failed\r\n",
+        "ping 127.0.0.1 -n 2 >NUL\r\n",
+        "del CODEX95W.EXE >NUL\r\n",
+        "if not exist CODEX95W.EXE goto install\r\n",
+        "ping 127.0.0.1 -n 2 >NUL\r\n",
+        "del CODEX95W.EXE >NUL\r\n",
+        "if not exist CODEX95W.EXE goto install\r\n",
+        "ping 127.0.0.1 -n 2 >NUL\r\n",
+        "del CODEX95W.EXE >NUL\r\n",
+        "if exist CODEX95W.EXE goto locked\r\n",
+        ":install\r\n",
+        "copy CODEX95W.NEW CODEX95W.EXE >NUL\r\n",
+        "if not exist CODEX95W.EXE goto restore\r\n",
+        "fc /b CODEX95W.NEW CODEX95W.EXE >NUL\r\n",
+        "if errorlevel 1 goto restore\r\n",
+        "del CODEX95W.NEW >NUL\r\n",
+        "CODEX95W.EXE\r\n",
+        "goto end\r\n",
+        ":restore\r\n",
+        "echo Update failed. Restoring the previous client...\r\n",
+        "del CODEX95W.EXE >NUL\r\n",
+        "copy CODEX95W.OLD CODEX95W.EXE >NUL\r\n",
+        "pause\r\n",
+        "CODEX95W.EXE\r\n",
+        "goto end\r\n",
+        ":locked\r\n",
+        "echo The old client is still running. Update was not installed.\r\n",
+        "pause\r\n",
+        "CODEX95W.EXE\r\n",
+        "goto end\r\n",
+        ":backup_failed\r\n",
+        "echo Could not create CODEX95W.OLD. Update cancelled.\r\n",
+        "pause\r\n",
+        ":end\r\n"
+    };
     file = CreateFile(batch_path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
         FILE_ATTRIBUTE_NORMAL, NULL);
     if (file == INVALID_HANDLE_VALUE) return 0;
-    WriteFile(file, text, (DWORD)strlen(text), &written, NULL);
+    for (i = 0; i < (int)(sizeof(lines) / sizeof(lines[0])); i++) {
+        if (!WriteFile(file, lines[i], (DWORD)strlen(lines[i]), &written, NULL) ||
+            written != (DWORD)strlen(lines[i])) {
+            CloseHandle(file);
+            DeleteFile(batch_path);
+            return 0;
+        }
+    }
     CloseHandle(file);
     return 1;
 }
 
-static void update_client(void) {
+static int version_is_newer(const char *candidate, const char *current) {
+    int i;
+    char *candidate_end, *current_end;
+    unsigned long a, b;
+    for (i = 0; i < 3; i++) {
+        a = strtoul(candidate, &candidate_end, 10);
+        b = strtoul(current, &current_end, 10);
+        if (a != b) return a > b;
+        candidate = *candidate_end == '.' ? candidate_end + 1 : candidate_end;
+        current = *current_end == '.' ? current_end + 1 : current_end;
+    }
+    return 0;
+}
+
+static int get_client_manifest(const Config *cfg, char *version, size_t version_cap,
+                               DWORD *size) {
+    char reply[BUF_SIZE], status[32], size_text[32];
+    unsigned long parsed;
+    if (!http_post(cfg, "/client/manifest", "", reply, sizeof(reply))) return 0;
+    field(reply, "status", status, sizeof(status));
+    field(reply, "version", version, version_cap);
+    field(reply, "size", size_text, sizeof(size_text));
+    parsed = strtoul(size_text, NULL, 10);
+    if (strcmp(status, "ok") || !version[0] || parsed < 16384) return 0;
+    *size = (DWORD)parsed;
+    return 1;
+}
+
+static unsigned __stdcall update_check_thread(void *param) {
+    Config *cfg = (Config *)param;
+    char version[32];
+    DWORD size;
+    if ((!strcmp(cfg->host, "auto") && !discover_bridge(cfg)) ||
+        !get_client_manifest(cfg, version, sizeof(version), &size)) {
+        free(cfg);
+        return 0;
+    }
+    if (version_is_newer(version, APP_VERSION)) post_alloc(WM_UPDATE_AVAILABLE, version);
+    free(cfg);
+    return 0;
+}
+
+static void check_for_updates(void) {
+    Config *cfg;
+    HANDLE thread;
+    unsigned id;
+    cfg = (Config *)calloc(1, sizeof(Config));
+    if (!cfg) return;
+    load_config(cfg);
+    if (!cfg->check_updates) {
+        free(cfg);
+        return;
+    }
+    thread = (HANDLE)_beginthreadex(NULL, 256 * 1024, update_check_thread, cfg, 0, &id);
+    if (thread) CloseHandle(thread);
+    else free(cfg);
+}
+
+static void update_client(int ask_confirmation) {
     Config cfg;
     char base[MAX_PATH], *slash, new_path[MAX_PATH], batch_path[MAX_PATH];
-    char cmd[MAX_PATH + 64], host_port[160];
+    char cmd[MAX_PATH + 64], host_port[160], version[32], question[384];
+    DWORD expected_size;
+    const char *update_verb;
+    UINT prompt_flags;
     STARTUPINFO si;
     PROCESS_INFORMATION pi;
     if (g_busy) return;
@@ -1680,10 +1895,29 @@ static void update_client(void) {
         SetWindowText(g_host, host_port);
         save_config(&cfg);
     }
-    if (MessageBox(g_main,
-        "Download the latest Codex95 client from the bridge and restart?\r\n\r\n"
-        "The updater will replace CODEX95W.EXE after this window closes.",
-        APP_TITLE, MB_YESNO | MB_ICONQUESTION) != IDYES) return;
+    SetWindowText(g_status, "Checking for updates...");
+    if (!get_client_manifest(&cfg, version, sizeof(version), &expected_size)) {
+        MessageBox(g_main, "Could not read the update manifest from the bridge.",
+            APP_TITLE, MB_OK | MB_ICONSTOP);
+        SetWindowText(g_status, "Ready");
+        return;
+    }
+    if (ask_confirmation) {
+        if (version_is_newer(version, APP_VERSION)) update_verb = "Install";
+        else if (version_is_newer(APP_VERSION, version)) update_verb = "Downgrade to";
+        else update_verb = "Reinstall";
+        prompt_flags = MB_YESNO | (version_is_newer(APP_VERSION, version)
+            ? MB_ICONWARNING | MB_DEFBUTTON2 : MB_ICONQUESTION);
+        _snprintf(question, sizeof(question) - 1,
+            "%s Codex95 %s from the bridge (%lu KB)?\r\n\r\n"
+            "Current client: %s\r\nA backup will be kept as CODEX95W.OLD.",
+            update_verb, version, (expected_size + 1023) / 1024, APP_VERSION);
+        question[sizeof(question) - 1] = 0;
+        if (MessageBox(g_main, question, APP_TITLE, prompt_flags) != IDYES) {
+            SetWindowText(g_status, "Ready");
+            return;
+        }
+    }
     GetModuleFileName(NULL, base, sizeof(base));
     slash = strrchr(base, '\\');
     if (!slash) return;
@@ -1693,13 +1927,16 @@ static void update_client(void) {
     strcpy(batch_path, base);
     strcpy(slash + 1, "");
     SetWindowText(g_status, "Downloading update...");
-    if (!http_get_file(&cfg, "/client/CODEX95W.EXE", new_path)) {
+    if (!http_get_file(&cfg, "/client/CODEX95W.EXE", new_path, expected_size) ||
+        !valid_executable(new_path, expected_size)) {
+        DeleteFile(new_path);
         MessageBox(g_main, "Could not download update from the bridge.",
             APP_TITLE, MB_OK | MB_ICONSTOP);
         SetWindowText(g_status, "Ready");
         return;
     }
     if (!write_update_batch(batch_path)) {
+        DeleteFile(new_path);
         MessageBox(g_main, "Could not create APPLYUPD.BAT.", APP_TITLE, MB_OK | MB_ICONSTOP);
         SetWindowText(g_status, "Ready");
         return;
@@ -1709,6 +1946,7 @@ static void update_client(void) {
     si.cb = sizeof(si);
     strcpy(cmd, "COMMAND.COM /C APPLYUPD.BAT");
     if (!CreateProcess(NULL, cmd, NULL, NULL, FALSE, 0, NULL, base, &si, &pi)) {
+        DeleteFile(new_path);
         MessageBox(g_main, "Could not start updater batch file.", APP_TITLE, MB_OK | MB_ICONSTOP);
         SetWindowText(g_status, "Ready");
         return;
@@ -1807,20 +2045,20 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             hwnd, NULL, NULL, NULL);
         g_project = CreateWindowEx(WS_EX_CLIENTEDGE, "EDIT", "", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
             60, 8, 518, 22, hwnd, (HMENU)IDC_PROJECT, NULL, NULL);
-        CreateWindow("BUTTON", "Browse...", WS_CHILD | WS_VISIBLE,
+        CreateWindow("BUTTON", "Browse...", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
             584, 8, 68, 22, hwnd, (HMENU)IDC_BROWSE, NULL, NULL);
         CreateWindow("STATIC", "Projects", WS_CHILD | WS_VISIBLE,
             8, 44, 112, 16, hwnd, NULL, NULL, NULL);
         g_projects = CreateWindowEx(WS_EX_CLIENTEDGE, "LISTBOX", "",
             WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT,
             8, 60, 112, 250, hwnd, (HMENU)IDC_PROJECTS, NULL, NULL);
-        CreateWindow("BUTTON", "New", WS_CHILD | WS_VISIBLE,
+        CreateWindow("BUTTON", "New", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
             8, 314, 54, 22, hwnd, (HMENU)IDC_NEW_PROJECT, NULL, NULL);
-        CreateWindow("BUTTON", "Refresh", WS_CHILD | WS_VISIBLE,
+        CreateWindow("BUTTON", "Refresh", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
             66, 314, 54, 22, hwnd, (HMENU)IDC_REFRESH_PROJECTS, NULL, NULL);
-        CreateWindow("BUTTON", "Delete project", WS_CHILD | WS_VISIBLE,
+        CreateWindow("BUTTON", "Delete project", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
             8, 340, 112, 22, hwnd, (HMENU)IDC_DELETE_PROJECT, NULL, NULL);
-        CreateWindow("BUTTON", "Rename project", WS_CHILD | WS_VISIBLE,
+        CreateWindow("BUTTON", "Rename project", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
             8, 366, 112, 22, hwnd, (HMENU)IDC_RENAME_PROJECT, NULL, NULL);
         g_transcript = CreateWindowEx(WS_EX_CLIENTEDGE, "EDIT",
             "Codex95 is ready.\r\nDescribe what you want to build.",
@@ -1829,7 +2067,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         g_prompt = CreateWindowEx(WS_EX_CLIENTEDGE, "EDIT", "",
             WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL,
             8, 350, 540, 54, hwnd, (HMENU)IDC_PROMPT, NULL, NULL);
-        g_send = CreateWindow("BUTTON", "Build it", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
+        g_send = CreateWindow("BUTTON", "Build it", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
             556, 350, 92, 54, hwnd, (HMENU)IDC_SEND, NULL, NULL);
         g_auto = CreateWindow("BUTTON", "", WS_CHILD | BS_AUTOCHECKBOX,
             0, 0, 1, 1, hwnd, (HMENU)IDC_AUTO, NULL, NULL);
@@ -1847,6 +2085,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         SendMessage(g_auto, WM_SETFONT, (WPARAM)font, TRUE);
         SendMessage(g_status, WM_SETFONT, (WPARAM)font, TRUE);
         SendMessage(g_projects, WM_SETFONT, (WPARAM)font, TRUE);
+        EnumChildWindows(hwnd, set_child_font, (LPARAM)font);
         load_config(&cfg);
         sprintf(host_port, "%s:%d", cfg.host, cfg.port);
         SetWindowText(g_host, host_port);
@@ -1870,8 +2109,11 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         else if (LOWORD(wp) == IDC_REFRESH_PROJECTS) refresh_projects();
         else if (LOWORD(wp) == IDC_PROJECTS && HIWORD(wp) == LBN_SELCHANGE) switch_project();
         else if (LOWORD(wp) == IDM_SETTINGS) show_settings();
-        else if (LOWORD(wp) == IDM_UPDATE_CLIENT) update_client();
+        else if (LOWORD(wp) == IDM_UPDATE_CLIENT) update_client(1);
         return 0;
+    case WM_DRAWITEM:
+        if (draw_button((DRAWITEMSTRUCT *)lp)) return TRUE;
+        break;
     case WM_ERASEBKGND:
         if (g_dark_mode) {
             RECT rc;
@@ -1926,12 +2168,34 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             set_project_status(root);
         }
         SetFocus(g_prompt);
+        if (g_pending_update[0]) {
+            post_alloc(WM_UPDATE_AVAILABLE, g_pending_update);
+            g_pending_update[0] = 0;
+        }
         if (g_smoke) PostMessage(hwnd, WM_CLOSE, 0, 0);
         return 0;
     case WM_RUN_SMOKE:
         SetWindowText(g_prompt, "create hello");
         start_task();
         return 0;
+    case WM_UPDATE_AVAILABLE: {
+        char *version = (char *)lp;
+        char question[256];
+        if (g_busy || !IsWindowEnabled(hwnd)) {
+            strncpy(g_pending_update, version, sizeof(g_pending_update) - 1);
+            g_pending_update[sizeof(g_pending_update) - 1] = 0;
+            free(version);
+            return 0;
+        }
+        _snprintf(question, sizeof(question) - 1,
+            "Codex95 %s is available on the bridge.\r\n\r\n"
+            "Install it now?", version);
+        question[sizeof(question) - 1] = 0;
+        free(version);
+        if (MessageBox(hwnd, question, APP_TITLE,
+            MB_YESNO | MB_ICONINFORMATION) == IDYES) update_client(0);
+        return 0;
+    }
     case WM_CLOSE:
         if (g_busy && MessageBox(hwnd, "Codex95 is still working. Close anyway?",
             APP_TITLE, MB_YESNO | MB_ICONQUESTION) != IDYES) return 0;
@@ -1999,6 +2263,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR command_line, i
     ShowWindow(g_main, show);
     UpdateWindow(g_main);
     if (g_smoke) PostMessage(g_main, WM_RUN_SMOKE, 0, 0);
+    else check_for_updates();
     while (GetMessage(&msg, NULL, 0, 0)) {
         TranslateMessage(&msg);
         DispatchMessage(&msg);
